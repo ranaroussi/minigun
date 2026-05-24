@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Manage preferences</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; max-width: 640px; margin: 64px auto; padding: 0 16px; line-height: 1.5; color: #222; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } .card { background: #1c1c1c; border-color: #333; } button { background: #fff; color: #111; } a { color: #8ab4ff; } .row { border-color: #333; } }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 24px; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  h2 { font-size: 1rem; margin: 0 0 16px; color: #555; font-weight: 500; }
+  @media (prefers-color-scheme: dark) { h2 { color: #aaa; } }
+  p { margin: 0 0 16px; }
+  .email { font-weight: 600; }
+  .row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-top: 1px solid #eee; }
+  .row:first-of-type { border-top: 0; }
+  .row input[type=checkbox] { margin-top: 4px; transform: scale(1.2); }
+  .row label { flex: 1; cursor: pointer; }
+  .row .name { font-weight: 600; }
+  .row .desc { color: #777; font-size: 0.9rem; margin-top: 2px; }
+  @media (prefers-color-scheme: dark) { .row .desc { color: #999; } }
+  button { background: #111; color: #fff; border: 0; border-radius: 6px; padding: 12px 18px; font-size: 1rem; cursor: pointer; margin-top: 16px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .muted { color: #777; font-size: 0.875rem; }
+  .delta { padding: 4px 0; }
+  .delta.sub { color: #060; }
+  .delta.unsub { color: #800; }
+  @media (prefers-color-scheme: dark) { .delta.sub { color: #6c6; } .delta.unsub { color: #f88; } }
+</style>
+</head>
+<body>
+<div class="card">
+  {{if .Error}}
+    <h1>That link is no longer valid.</h1>
+    <p class="muted">{{.Error}}</p>
+  {{else if .Done}}
+    <h1>Your preferences have been saved.</h1>
+    <p class="muted">Changes for <span class="email">{{.Email}}</span>:</p>
+    {{if .Deltas}}
+      {{range .Deltas}}
+        <div class="delta {{if .NowSubbed}}sub{{else}}unsub{{end}}">
+          {{if .NowSubbed}}Subscribed to{{else}}Unsubscribed from{{end}} <strong>{{.ListName}}</strong>
+        </div>
+      {{end}}
+    {{else}}
+      <p class="muted">No changes were made.</p>
+    {{end}}
+  {{else}}
+    <h1>Manage your email preferences</h1>
+    <h2>{{.CompanyName}}</h2>
+    <p>You're managing subscriptions for <span class="email">{{.Email}}</span>.</p>
+    <form method="POST" action="/manage/{{.Token}}">
+      {{range .Lists}}
+        <div class="row">
+          <input type="checkbox" id="list-{{.List.ID}}" name="list" value="{{.List.ID}}" {{if .Subscribed}}checked{{end}} />
+          <label for="list-{{.List.ID}}">
+            <div class="name">{{.List.Name}}</div>
+            {{if .List.Description}}<div class="desc">{{.List.Description}}</div>{{end}}
+          </label>
+        </div>
+      {{end}}
+      <button type="submit">Save preferences</button>
+    </form>
+    <p class="muted">Uncheck a list to unsubscribe. Check it to subscribe. Then click <em>Save preferences</em>.</p>
+  {{end}}
+</div>
+</body>
+</html>

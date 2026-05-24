@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Unsubscribe</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+{{if .TurnstileSiteKey}}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{{end}}
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; max-width: 520px; margin: 64px auto; padding: 0 16px; line-height: 1.5; color: #222; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } .card { background: #1c1c1c; border-color: #333; } button { background: #fff; color: #111; } a { color: #8ab4ff; } }
+  .card { border: 1px solid #ddd; border-radius: 8px; padding: 24px; }
+  h1 { font-size: 1.25rem; margin: 0 0 12px; }
+  p { margin: 0 0 16px; }
+  .email { font-weight: 600; }
+  button { background: #111; color: #fff; border: 0; border-radius: 6px; padding: 12px 18px; font-size: 1rem; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .muted { color: #777; font-size: 0.875rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  {{if .Done}}
+    <h1>You've been unsubscribed from {{.ListName}}.</h1>
+    <p class="muted">{{.Email}} will no longer receive these emails.</p>
+  {{else if .Error}}
+    <h1>That link is no longer valid.</h1>
+    <p class="muted">{{.Error}}</p>
+  {{else}}
+    <h1>Unsubscribe from {{.ListName}}?</h1>
+    <p>You're about to unsubscribe <span class="email">{{.Email}}</span> from this list.</p>
+    <form method="POST" action="/u/{{.Token}}">
+      {{if .TurnstileSiteKey}}<div class="cf-turnstile" data-sitekey="{{.TurnstileSiteKey}}" data-action="unsubscribe"></div><br/>{{end}}
+      <button type="submit">Confirm unsubscribe</button>
+    </form>
+    <p class="muted">If you didn't mean to click, you can safely close this page.</p>
+  {{end}}
+</div>
+</body>
+</html>

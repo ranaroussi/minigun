@@ -1,0 +1,33 @@
+.git
+.gitignore
+.dockerignore
+.factory
+.idea
+.vscode
+
+# repo-root docs (build context only needs src/)
+README.md
+PRD.md
+docker-compose.yml
+Dockerfile
+*.md
+
+# Go build outputs and caches
+**/bin/
+**/dist/
+**/*.test
+**/*.out
+
+# runtime data
+data/
+**/data/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# OS noise
+.DS_Store
+**/.DS_Store
+
+# CLI module is not part of the server image
+cli/

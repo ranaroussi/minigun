@@ -1,0 +1,39 @@
+name = "minigun"
+main = "src/index.ts"
+compatibility_date = "2026-05-24"
+compatibility_flags = ["nodejs_compat"]
+account_id = "668406902f0409b8ccdfa410b5539821"
+workers_dev = false
+
+# Bind the worker to the custom subdomain mailer.misc.sh on the misc.sh zone.
+# Cloudflare auto-provisions the DNS record because custom_domain = true.
+routes = [
+  { pattern = "mailer.misc.sh", custom_domain = true }
+]
+
+# Public origin used to build per-recipient unsubscribe and manage URLs.
+[vars]
+MINIGUN_PUBLIC_URL = "https://mailer.misc.sh"
+MAILGUN_REGION = "us"
+# Where to 302-redirect visitors who load GET / in a browser. Leave unset for a plain 404.
+REDIRECT_URL = "https://varops.com"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "minigun"
+database_id = "a49bd078-d9ea-43bb-9b65-bbf5dea16412"
+migrations_dir = "migrations"
+
+# Cron Trigger fires every minute to sweep for bulk sends stuck in `running`
+# for > 2 minutes and nudges them back into the self-call step loop.
+# See worker/src/send/cron.ts (sweepStuckSends) for the watchdog logic.
+[triggers]
+crons = ["* * * * *"]
+
+# Secrets (set via `wrangler secret put <NAME>`):
+#   MAILGUN_API_KEY        — Mailgun API key
+#   MAILGUN_DOMAIN         — Mailgun sending domain (e.g. mg.example.com)
+#   MINIGUN_HMAC_SECRET    — secret used to sign unsubscribe/manage tokens
+#   MINIGUN_INTERNAL_SECRET — secret used to authorize the self-call POST /internal/send/{id}/step
+#   MINIGUN_API_TOKEN      — optional; when set, bearer token required on all routes except /healthz, /u/, /manage/
+#   MINIGUN_TURNSTILE_SECRET_KEY — optional Cloudflare Turnstile secret

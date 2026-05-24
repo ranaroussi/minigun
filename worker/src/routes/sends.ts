@@ -1,0 +1,296 @@
+import { Context, Hono } from 'hono';
+import { Env, publicURL } from '../env';
+import {
+  buildBody,
+  ensureUnsubFooterHTML,
+  ensureUnsubFooterText,
+  htmlToText,
+  rewriteVariables,
+} from '../lib/markdown';
+import { metrics } from '../lib/mailgun';
+import { clampLimit, decodeCursor, encodeCursor } from '../lib/pagination';
+import { scheduleNextStep, step } from '../send/bulk';
+import { runSingle } from '../send/single';
+import { sendProgress } from '../store/batches';
+import { resolveList } from '../store/lists';
+import { createSend, getSend, listSends } from '../store/sends';
+import {
+  countSubscribed,
+  maxSubscriptionID,
+} from '../store/subscriptions';
+import { NotFoundError, UnsubscribeMode } from '../store/types';
+import { countUnsubscribesForSend } from '../store/unsubs';
+
+function emptyToNull(s: string | undefined | null): string | null {
+  if (!s || !s.trim()) return null;
+  return s;
+}
+
+function kick(env: Env, ctx: ExecutionContext, sendID: string): void {
+  ctx.waitUntil(
+    fetch(`${publicURL(env)}/send/${sendID}/next`, {
+      method: 'POST',
+      headers: { 'x-internal-secret': env.MINIGUN_INTERNAL_SECRET },
+    }).catch((err) => console.error('initial kick failed', sendID, err)),
+  );
+}
+
+async function handleSendStep(c: Context<{ Bindings: Env }>) {
+  const id = c.req.param('id');
+  if (!id) return c.json({ error: 'send id required' }, 400);
+  let snd;
+  try {
+    snd = await getSend(c.env.DB, id);
+  } catch (err) {
+    if (err instanceof NotFoundError) return c.json({ error: 'send not found' }, 404);
+    throw err;
+  }
+  if (snd.status === 'completed' || snd.status === 'cancelled' || snd.status === 'failed') {
+    return c.json({ state: 'terminal', status: snd.status });
+  }
+  if (snd.type === 'single') {
+    c.executionCtx.waitUntil(runSingle(c.env, id));
+    return c.json({ state: 'started' });
+  }
+  const result = await step(c.env, id);
+  if (result.state === 'sent') {
+    scheduleNextStep(c.env, c.executionCtx, id, snd.throttle_ms);
+  }
+  return c.json(result);
+}
+
+export function mountSends(app: Hono<{ Bindings: Env }>) {
+  app.post('/send/bulk', async (c) => {
+    const body = await c.req.json<{
+      list?: string;
+      subject?: string;
+      preheader?: string;
+      from?: string;
+      reply_to?: string;
+      md?: string;
+      html?: string;
+      text?: string;
+      template?: string;
+      batch_size?: number;
+      throttle_ms?: number;
+      unsub_mode?: string;
+      unsub_redir?: string;
+      unsub_url?: string;
+      notify_email?: string;
+    }>().catch(() => null);
+    if (!body) return c.json({ error: 'invalid JSON' }, 400);
+    if (!body.list?.trim() || !body.subject?.trim() || !body.from?.trim()) {
+      return c.json({ error: 'list, subject, and from are required' }, 400);
+    }
+    if (!body.md && !body.html) {
+      return c.json({ error: 'either md or html is required' }, 400);
+    }
+    let list;
+    try {
+      list = await resolveList(c.env.DB, body.list);
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: 'list not found' }, 404);
+      throw err;
+    }
+
+    let bodyHTML: string;
+    let bodyText: string;
+    if (body.md) {
+      const built = buildBody(body.md, '', body.subject, body.preheader ?? '');
+      bodyHTML = built.html;
+      bodyText = built.text;
+    } else {
+      const htmlWithFooter = ensureUnsubFooterHTML(body.html!);
+      const { rewritten } = rewriteVariables(htmlWithFooter);
+      bodyHTML = rewritten;
+      if (body.text) {
+        bodyText = rewriteVariables(ensureUnsubFooterText(body.text)).rewritten;
+      } else {
+        const derivedText = ensureUnsubFooterText(htmlToText(body.html!));
+        bodyText = rewriteVariables(derivedText).rewritten;
+      }
+    }
+
+    const maxID = await maxSubscriptionID(c.env.DB, list.id);
+    const total = await countSubscribed(c.env.DB, list.id, maxID);
+    const mode = (body.unsub_mode || 'local') as UnsubscribeMode;
+
+    const snd = await createSend(c.env.DB, {
+      type: 'bulk',
+      list_id: list.id,
+      subject: body.subject,
+      from_header: body.from,
+      reply_to: emptyToNull(body.reply_to),
+      template_name: emptyToNull(body.template),
+      body_md: emptyToNull(body.md ?? null),
+      body_html: bodyHTML,
+      body_text: bodyText,
+      batch_size: body.batch_size,
+      throttle_ms: body.throttle_ms,
+      max_subscription_id: maxID,
+      total_recipients: total,
+      unsubscribe_mode: mode,
+      unsubscribe_redirect_url: emptyToNull(body.unsub_redir),
+      unsubscribe_external_url: emptyToNull(body.unsub_url),
+      notify_email: emptyToNull(body.notify_email),
+    });
+    kick(c.env, c.executionCtx, snd.id);
+    return c.json({ send_id: snd.id, status: snd.status, total_recipients: total }, 202);
+  });
+
+  app.post('/send/single', async (c) => {
+    const body = await c.req.json<{
+      to?: string;
+      from?: string;
+      reply_to?: string;
+      subject?: string;
+      md?: string;
+      html?: string;
+      text?: string;
+    }>().catch(() => null);
+    if (!body) return c.json({ error: 'invalid JSON' }, 400);
+    if (!body.to?.trim() || !body.subject?.trim() || !body.from?.trim()) {
+      return c.json({ error: 'to, subject, and from are required' }, 400);
+    }
+    if (!body.md && !body.html) {
+      return c.json({ error: 'either md or html is required' }, 400);
+    }
+
+    let bodyHTML: string;
+    let bodyText: string;
+    if (body.md) {
+      const built = buildBody(body.md, '', body.subject, '');
+      bodyHTML = built.html;
+      bodyText = built.text;
+    } else {
+      const htmlWithFooter = ensureUnsubFooterHTML(body.html!);
+      const { rewritten } = rewriteVariables(htmlWithFooter);
+      bodyHTML = rewritten;
+      const baseText = body.text ?? htmlToText(body.html!);
+      bodyText = rewriteVariables(ensureUnsubFooterText(baseText)).rewritten;
+    }
+
+    const snd = await createSend(c.env.DB, {
+      type: 'single',
+      recipient_email: body.to,
+      subject: body.subject,
+      from_header: body.from,
+      reply_to: emptyToNull(body.reply_to),
+      body_md: emptyToNull(body.md ?? null),
+      body_html: bodyHTML,
+      body_text: bodyText,
+      batch_size: 1,
+      throttle_ms: 0,
+    });
+    c.executionCtx.waitUntil(runSingle(c.env, snd.id));
+    return c.json({ send_id: snd.id, status: snd.status }, 202);
+  });
+
+  app.post('/send/:id/next', handleSendStep);
+  app.post('/send/:id/resume', handleSendStep);
+
+  app.get('/send/:id', async (c) => {
+    const id = c.req.param('id');
+    let snd;
+    try {
+      snd = await getSend(c.env.DB, id);
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: 'send not found' }, 404);
+      throw err;
+    }
+    const { completed, sent } = await sendProgress(c.env.DB, id);
+    const totalBatches =
+      snd.batch_size > 0 && snd.total_recipients > 0
+        ? Math.ceil(snd.total_recipients / snd.batch_size)
+        : 0;
+    const remaining = Math.max(0, snd.total_recipients - sent);
+    return c.json({
+      id: snd.id,
+      status: snd.status,
+      progress: {
+        completed_batches: completed,
+        total_batches: totalBatches,
+        sent,
+        remaining,
+        last_subscription_id: snd.last_subscription_id,
+      },
+      created_at: snd.created_at,
+      updated_at: snd.updated_at,
+      completed_at: snd.completed_at,
+      last_error: snd.last_error,
+    });
+  });
+
+  app.get('/send/:id/stats', async (c) => {
+    const id = c.req.param('id');
+    let snd;
+    try {
+      snd = await getSend(c.env.DB, id);
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: 'send not found' }, 404);
+      throw err;
+    }
+    const { sent } = await sendProgress(c.env.DB, id);
+    const unsub = await countUnsubscribesForSend(c.env.DB, id);
+
+    const totals: Record<string, number> = {};
+    try {
+      const start = new Date(new Date(snd.created_at).getTime() - 24 * 60 * 60 * 1000);
+      const end = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const m = await metrics(
+        c.env,
+        start,
+        end,
+        [
+          'accepted_count',
+          'delivered_count',
+          'failed_count',
+          'opened_count',
+          'clicked_count',
+          'complained_count',
+        ],
+        snd.id,
+      );
+      for (const item of m.items) {
+        for (const [k, v] of Object.entries(item.metrics)) totals[k] = (totals[k] ?? 0) + v;
+      }
+    } catch (err) {
+      console.warn('mailgun metrics failed', snd.id, err);
+    }
+
+    return c.json({
+      id: snd.id,
+      sent,
+      delivered: totals['delivered_count'] ?? 0,
+      failed: totals['failed_count'] ?? 0,
+      opened: totals['opened_count'] ?? 0,
+      clicked: totals['clicked_count'] ?? 0,
+      complained: totals['complained_count'] ?? 0,
+      unsubscribed: unsub,
+    });
+  });
+
+  app.get('/sends', async (c) => {
+    let cursor;
+    try {
+      cursor = decodeCursor(c.req.query('cursor'));
+    } catch {
+      return c.json({ error: 'invalid cursor' }, 400);
+    }
+    const limit = clampLimit(Number(c.req.query('limit') ?? '0'));
+    const items = await listSends(
+      c.env.DB,
+      cursor.afterCreated ?? '',
+      cursor.afterStringID ?? '',
+      limit + 1,
+    );
+    const hasMore = items.length > limit;
+    const trimmed = hasMore ? items.slice(0, limit) : items;
+    const last = trimmed[trimmed.length - 1];
+    const nextCursor =
+      hasMore && last
+        ? encodeCursor({ afterCreated: last.created_at, afterStringID: last.id })
+        : '';
+    return c.json({ items: trimmed, next_cursor: nextCursor, has_more: hasMore });
+  });
+}

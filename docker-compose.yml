@@ -1,0 +1,25 @@
+services:
+  minigun:
+    build:
+      context: .
+    image: ghcr.io/ranaroussi/minigun:latest
+    container_name: minigun
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:?MAILGUN_API_KEY is required}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:?MAILGUN_DOMAIN is required}
+      MAILGUN_REGION: ${MAILGUN_REGION:-us}
+      MINIGUN_PUBLIC_URL: ${MINIGUN_PUBLIC_URL:?MINIGUN_PUBLIC_URL is required}
+      MINIGUN_HMAC_SECRET: ${MINIGUN_HMAC_SECRET:?MINIGUN_HMAC_SECRET is required}
+      MINIGUN_TURNSTILE_SITE_KEY: ${MINIGUN_TURNSTILE_SITE_KEY:-}
+      MINIGUN_TURNSTILE_SECRET_KEY: ${MINIGUN_TURNSTILE_SECRET_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
