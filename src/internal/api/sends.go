@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -294,46 +293,61 @@ func (s *Server) handleSendStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_, sent, err := s.store.SendProgress(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	unsub, err := s.store.CountUnsubscribesForSend(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+
+	st, statsErr := s.store.GetSendStats(r.Context(), id)
+	if statsErr != nil && !errors.Is(statsErr, store.ErrNotFound) {
+		writeError(w, http.StatusInternalServerError, statsErr.Error())
 		return
 	}
 
-	start := snd.CreatedAt.Add(-24 * time.Hour)
-	end := time.Now().Add(24 * time.Hour)
-	mr := mailgun.MetricsRequest{
-		Start:      start,
-		End:        end,
-		Resolution: "day",
-		Metrics:    []string{"accepted_count", "delivered_count", "failed_count", "opened_count", "clicked_count", "complained_count"},
-		Tag:        snd.ID,
+	// Stable path: row exists and has at least one Mailgun fetch (or is_final).
+	if st != nil && (st.IsFinal || st.LastFetchedAt != nil) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":              snd.ID,
+			"sent":            st.Sent,
+			"delivered":       st.Delivered,
+			"opened":          st.Opened,
+			"clicked":         st.Clicked,
+			"failed":          st.Failed,
+			"complained":      st.Complained,
+			"unsubscribed":    st.Unsubscribed,
+			"is_final":        st.IsFinal,
+			"last_fetched_at": st.LastFetchedAt,
+			"source":          "send_stats",
+		})
+		return
 	}
-	totals := map[string]uint64{}
-	if metrics, err := s.mailgun.Metrics(r.Context(), mr); err == nil && metrics != nil {
-		for _, item := range metrics.Items {
-			for k, v := range item.Metrics {
-				totals[k] += v
-			}
+
+	// Fallback path: no Mailgun poll yet (send still running, or completed
+	// less than ~15 minutes ago). Compute live numbers — but always use
+	// the DB-tracked unsubscribed count, never Mailgun's.
+	totals, mgErr := s.mailgun.PerSendMetrics(r.Context(), snd.ID, snd.CreatedAt)
+	if mgErr != nil {
+		s.log.Warn("mailgun metrics failed", "send_id", snd.ID, "err", mgErr)
+		totals = &mailgun.PerSendTotals{}
+	}
+	unsub := uint64(0)
+	if st != nil {
+		unsub = st.Unsubscribed
+	} else {
+		n, err := s.store.CountUnsubscribesForSend(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-	} else if err != nil {
-		s.log.Warn("mailgun metrics failed", "send_id", snd.ID, "err", err)
+		unsub = uint64(n)
 	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":           snd.ID,
-		"sent":         sent,
-		"delivered":    totals["delivered_count"],
-		"failed":       totals["failed_count"],
-		"opened":       totals["opened_count"],
-		"clicked":      totals["clicked_count"],
-		"complained":   totals["complained_count"],
+		"sent":         totals.Sent,
+		"delivered":    totals.Delivered,
+		"opened":       totals.Opened,
+		"clicked":      totals.Clicked,
+		"failed":       totals.Failed,
+		"complained":   totals.Complained,
 		"unsubscribed": unsub,
+		"is_final":     false,
+		"source":       "mailgun_live",
 	})
 }
 

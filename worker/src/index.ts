@@ -9,6 +9,7 @@ import { mountManage } from './routes/manage';
 import { mountSends } from './routes/sends';
 import { mountUnsubscribe } from './routes/unsubscribe';
 import { sweepStuckSends } from './send/cron';
+import { refreshDueStats } from './send/stats';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -42,5 +43,6 @@ export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(sweepStuckSends(env));
+    ctx.waitUntil(refreshDueStats(env));
   },
 };

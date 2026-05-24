@@ -21,8 +21,16 @@
 <body>
 <div class="card">
   {{if .Done}}
-    <h1>You've been unsubscribed from {{.ListName}}.</h1>
-    <p class="muted">{{.Email}} will no longer receive these emails.</p>
+    {{if .ListName}}
+      <h1>You've been unsubscribed from {{.ListName}}.</h1>
+    {{else}}
+      <h1>You're unsubscribed.</h1>
+    {{end}}
+    {{if .Email}}
+      <p class="muted">{{.Email}} will no longer receive these emails.</p>
+    {{else}}
+      <p class="muted">You will no longer receive these emails.</p>
+    {{end}}
   {{else if .Error}}
     <h1>That link is no longer valid.</h1>
     <p class="muted">{{.Error}}</p>

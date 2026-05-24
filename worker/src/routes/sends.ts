@@ -7,13 +7,14 @@ import {
   htmlToText,
   rewriteVariables,
 } from '../lib/markdown';
-import { metrics } from '../lib/mailgun';
+import { PerSendTotals, perSendMetrics } from '../lib/mailgun';
 import { clampLimit, decodeCursor, encodeCursor } from '../lib/pagination';
 import { scheduleNextStep, step } from '../send/bulk';
 import { runSingle } from '../send/single';
 import { sendProgress } from '../store/batches';
 import { resolveList } from '../store/lists';
 import { createSend, getSend, listSends } from '../store/sends';
+import { getSendStats } from '../store/stats';
 import {
   countSubscribed,
   maxSubscriptionID,
@@ -230,43 +231,49 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       if (err instanceof NotFoundError) return c.json({ error: 'send not found' }, 404);
       throw err;
     }
-    const { sent } = await sendProgress(c.env.DB, id);
-    const unsub = await countUnsubscribesForSend(c.env.DB, id);
 
-    const totals: Record<string, number> = {};
+    const st = await getSendStats(c.env.DB, id);
+    if (st && (st.is_final || st.last_fetched_at)) {
+      return c.json({
+        id: snd.id,
+        sent: st.sent,
+        delivered: st.delivered,
+        opened: st.opened,
+        clicked: st.clicked,
+        failed: st.failed,
+        complained: st.complained,
+        unsubscribed: st.unsubscribed,
+        is_final: st.is_final,
+        last_fetched_at: st.last_fetched_at,
+        source: 'send_stats',
+      });
+    }
+
+    let totals: PerSendTotals = {
+      sent: 0,
+      delivered: 0,
+      opened: 0,
+      clicked: 0,
+      failed: 0,
+      complained: 0,
+    };
     try {
-      const start = new Date(new Date(snd.created_at).getTime() - 24 * 60 * 60 * 1000);
-      const end = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      const m = await metrics(
-        c.env,
-        start,
-        end,
-        [
-          'accepted_count',
-          'delivered_count',
-          'failed_count',
-          'opened_count',
-          'clicked_count',
-          'complained_count',
-        ],
-        snd.id,
-      );
-      for (const item of m.items) {
-        for (const [k, v] of Object.entries(item.metrics)) totals[k] = (totals[k] ?? 0) + v;
-      }
+      totals = await perSendMetrics(c.env, snd.id, new Date(snd.created_at));
     } catch (err) {
       console.warn('mailgun metrics failed', snd.id, err);
     }
-
+    const unsub = st ? st.unsubscribed : await countUnsubscribesForSend(c.env.DB, id);
     return c.json({
       id: snd.id,
-      sent,
-      delivered: totals['delivered_count'] ?? 0,
-      failed: totals['failed_count'] ?? 0,
-      opened: totals['opened_count'] ?? 0,
-      clicked: totals['clicked_count'] ?? 0,
-      complained: totals['complained_count'] ?? 0,
+      sent: totals.sent,
+      delivered: totals.delivered,
+      opened: totals.opened,
+      clicked: totals.clicked,
+      failed: totals.failed,
+      complained: totals.complained,
       unsubscribed: unsub,
+      is_final: false,
+      source: 'mailgun_live',
     });
   });
 

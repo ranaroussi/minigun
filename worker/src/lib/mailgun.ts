@@ -112,6 +112,55 @@ export type MetricsResponse = {
   items: { dimensions: string[]; metrics: Record<string, number> }[];
 };
 
+export type PerSendTotals = {
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  failed: number;
+  complained: number;
+};
+
+export async function perSendMetrics(
+  env: Env,
+  sendID: string,
+  sendCreatedAt: Date,
+): Promise<PerSendTotals> {
+  const start = new Date(sendCreatedAt.getTime() - 60 * 60 * 1000);
+  const end = new Date(Date.now() + 60 * 60 * 1000);
+  const resp = await metrics(
+    env,
+    start,
+    end,
+    [
+      'accepted_count',
+      'delivered_count',
+      'failed_count',
+      'opened_count',
+      'clicked_count',
+      'complained_count',
+    ],
+    sendID,
+  );
+  const totals: PerSendTotals = {
+    sent: 0,
+    delivered: 0,
+    opened: 0,
+    clicked: 0,
+    failed: 0,
+    complained: 0,
+  };
+  for (const item of resp.items ?? []) {
+    totals.sent += item.metrics['accepted_count'] ?? 0;
+    totals.delivered += item.metrics['delivered_count'] ?? 0;
+    totals.opened += item.metrics['opened_count'] ?? 0;
+    totals.clicked += item.metrics['clicked_count'] ?? 0;
+    totals.failed += item.metrics['failed_count'] ?? 0;
+    totals.complained += item.metrics['complained_count'] ?? 0;
+  }
+  return totals;
+}
+
 export async function metrics(
   env: Env,
   start: Date,

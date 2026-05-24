@@ -160,3 +160,27 @@ export type SubscriptionDelta = {
   was_subbed: boolean;
   now_subbed: boolean;
 };
+
+export type SendStats = {
+  send_id: string;
+  sent: number;
+  delivered: number;
+  opened: number;
+  clicked: number;
+  failed: number;
+  complained: number;
+  unsubscribed: number;
+  first_fetched_at?: string | null;
+  last_fetched_at?: string | null;
+  next_fetch_at?: string | null;
+  is_final: boolean;
+  fetch_error?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type DueStatsRow = {
+  send_id: string;
+  created_at: string;
+  completed_at: string;
+};

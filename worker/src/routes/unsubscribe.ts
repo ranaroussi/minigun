@@ -43,8 +43,21 @@ function clientIP(headers: Headers): string {
 export function mountUnsubscribe(app: Hono<{ Bindings: Env }>) {
   app.get('/u/:token', async (c) => {
     const tokenStr = c.req.param('token');
+    let t;
     try {
-      const t = await verify(c.env.MINIGUN_HMAC_SECRET, tokenStr);
+      t = await verify(c.env.MINIGUN_HMAC_SECRET, tokenStr);
+    } catch {
+      return htmlResponse(
+        UnsubscribePage({
+          email: '',
+          listName: '',
+          token: tokenStr,
+          error: 'Invalid or expired unsubscribe link.',
+        }),
+        400,
+      );
+    }
+    try {
       const snd = await getSend(c.env.DB, t.sendID);
       const sub = await getSubscriptionByID(c.env.DB, t.subscriptionID);
       const contact = await getContactByID(c.env.DB, sub.contact_id);
@@ -68,15 +81,20 @@ export function mountUnsubscribe(app: Hono<{ Bindings: Env }>) {
         }),
       );
     } catch (err) {
-      const msg =
-        err instanceof InvalidTokenError
-          ? 'Invalid or expired unsubscribe link.'
-          : err instanceof NotFoundError
-            ? 'Subscription not found.'
-            : 'Invalid or expired unsubscribe link.';
+      if (err instanceof NotFoundError) {
+        return htmlResponse(
+          UnsubscribePage({ email: '', listName: '', token: tokenStr, done: true }),
+        );
+      }
+      console.error('unsub GET', err);
       return htmlResponse(
-        UnsubscribePage({ email: '', listName: '', token: tokenStr, error: msg }),
-        400,
+        UnsubscribePage({
+          email: '',
+          listName: '',
+          token: tokenStr,
+          error: 'Something went wrong. Please try again.',
+        }),
+        500,
       );
     }
   });
@@ -123,33 +141,27 @@ export function mountUnsubscribe(app: Hono<{ Bindings: Env }>) {
     let snd;
     try {
       snd = await getSend(c.env.DB, t.sendID);
-    } catch {
+    } catch (err) {
       if (oneClick) return new Response(null, { status: 200 });
-      return htmlResponse(
-        UnsubscribePage({
-          email: '',
-          listName: '',
-          token: tokenStr,
-          error: 'Send not found.',
-        }),
-        400,
-      );
+      if (err instanceof NotFoundError) {
+        return htmlResponse(
+          UnsubscribePage({ email: '', listName: '', token: tokenStr, done: true }),
+        );
+      }
+      throw err;
     }
 
     let sub;
     try {
       sub = await getSubscriptionByID(c.env.DB, t.subscriptionID);
-    } catch {
+    } catch (err) {
       if (oneClick) return new Response(null, { status: 200 });
-      return htmlResponse(
-        UnsubscribePage({
-          email: '',
-          listName: '',
-          token: tokenStr,
-          error: 'Already unsubscribed.',
-        }),
-        400,
-      );
+      if (err instanceof NotFoundError) {
+        return htmlResponse(
+          UnsubscribePage({ email: '', listName: '', token: tokenStr, done: true }),
+        );
+      }
+      throw err;
     }
     if (sub.subscribed) {
       sub = await unsubscribeSubscription(c.env.DB, sub.list_id, sub.contact_id);

@@ -1,4 +1,5 @@
 import { newSend } from '../lib/ids';
+import { initSendStatsStmt, markSendCompletedForStatsStmt } from './stats';
 import {
   NotFoundError,
   Send,
@@ -36,7 +37,7 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
   const batchSize = p.batch_size && p.batch_size > 0 ? p.batch_size : 500;
   const throttleMs = p.throttle_ms !== undefined && p.throttle_ms >= 0 ? p.throttle_ms : 1000;
   const mode = p.unsubscribe_mode || 'local';
-  await db
+  const insertSend = db
     .prepare(
       `INSERT INTO sends (
         id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
@@ -70,8 +71,8 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
       p.notify_email ?? null,
       now,
       now,
-    )
-    .run();
+    );
+  await db.batch([insertSend, initSendStatsStmt(db, id)]);
   return getSend(db, id);
 }
 
@@ -99,13 +100,17 @@ export async function updateSendStatus(
 ): Promise<void> {
   const now = nowISO();
   const isTerminal = status === 'completed' || status === 'failed' || status === 'cancelled';
-  await db
+  const updateSend = db
     .prepare(
       `UPDATE sends SET status = ?, last_error = ?, updated_at = ?,
               completed_at = COALESCE(?, completed_at) WHERE id = ?`,
     )
-    .bind(status, lastErr, now, isTerminal ? now : null, id)
-    .run();
+    .bind(status, lastErr, now, isTerminal ? now : null, id);
+  if (isTerminal) {
+    await db.batch([updateSend, markSendCompletedForStatsStmt(db, id)]);
+    return;
+  }
+  await updateSend.run();
 }
 
 export async function advanceSendCursor(

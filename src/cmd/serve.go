@@ -61,6 +61,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err := wm.RecoverPending(ctx); err != nil {
 		log.Error("recover pending sends", "err", err)
 	}
+	go wm.RunStatsScheduler(ctx, 15*time.Minute)
 
 	srv := api.New(cfg, st, mg, wm, ts, log)
 	httpServer := &http.Server{

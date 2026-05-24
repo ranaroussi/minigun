@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/ranaroussi/minigun/internal/models"
+	"github.com/ranaroussi/minigun/internal/store"
 	"github.com/ranaroussi/minigun/internal/tmpl"
 	"github.com/ranaroussi/minigun/internal/token"
 )
@@ -23,17 +24,29 @@ func (s *Server) handleUnsubscribeGet(w http.ResponseWriter, r *http.Request) {
 	}
 	snd, err := s.store.GetSend(r.Context(), t.SendID)
 	if err != nil {
-		s.renderUnsubPage(w, tmpl.UnsubscribeData{Error: "Send not found."})
+		if errors.Is(err, store.ErrNotFound) {
+			s.renderUnsubPage(w, tmpl.UnsubscribeData{Done: true})
+			return
+		}
+		s.renderUnsubPageStatus(w, http.StatusInternalServerError, tmpl.UnsubscribeData{Error: "Something went wrong. Please try again."})
 		return
 	}
 	sub, err := s.store.GetSubscriptionByID(r.Context(), t.SubscriptionID)
 	if err != nil {
-		s.renderUnsubPage(w, tmpl.UnsubscribeData{Error: "Subscription not found."})
+		if errors.Is(err, store.ErrNotFound) {
+			s.renderUnsubPage(w, tmpl.UnsubscribeData{Done: true})
+			return
+		}
+		s.renderUnsubPageStatus(w, http.StatusInternalServerError, tmpl.UnsubscribeData{Error: "Something went wrong. Please try again."})
 		return
 	}
 	contact, err := s.store.GetContactByID(r.Context(), sub.ContactID)
 	if err != nil {
-		s.renderUnsubPage(w, tmpl.UnsubscribeData{Error: "Contact not found."})
+		if errors.Is(err, store.ErrNotFound) {
+			s.renderUnsubPage(w, tmpl.UnsubscribeData{Done: true})
+			return
+		}
+		s.renderUnsubPageStatus(w, http.StatusInternalServerError, tmpl.UnsubscribeData{Error: "Something went wrong. Please try again."})
 		return
 	}
 	listName := ""
@@ -99,7 +112,11 @@ func (s *Server) handleUnsubscribePost(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		s.renderUnsubPage(w, tmpl.UnsubscribeData{Error: "Send not found."})
+		if errors.Is(err, store.ErrNotFound) {
+			s.renderUnsubPage(w, tmpl.UnsubscribeData{Done: true})
+			return
+		}
+		s.renderUnsubPageStatus(w, http.StatusInternalServerError, tmpl.UnsubscribeData{Error: "Something went wrong. Please try again."})
 		return
 	}
 
@@ -109,7 +126,7 @@ func (s *Server) handleUnsubscribePost(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		s.renderUnsubPage(w, tmpl.UnsubscribeData{Error: "Already unsubscribed."})
+		s.renderUnsubPage(w, tmpl.UnsubscribeData{Done: true})
 		return
 	}
 
@@ -172,6 +189,14 @@ func (s *Server) renderUnsubPage(w http.ResponseWriter, data tmpl.UnsubscribeDat
 	if data.Error != "" {
 		w.WriteHeader(http.StatusBadRequest)
 	}
+	if err := tmpl.Unsubscribe.Execute(w, data); err != nil {
+		s.log.Error("render unsub page", "err", err)
+	}
+}
+
+func (s *Server) renderUnsubPageStatus(w http.ResponseWriter, status int, data tmpl.UnsubscribeData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	if err := tmpl.Unsubscribe.Execute(w, data); err != nil {
 		s.log.Error("render unsub page", "err", err)
 	}

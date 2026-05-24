@@ -44,7 +44,13 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 		p.UnsubscribeMode = models.UnsubModeLocal
 	}
 
-	_, err := s.DB.ExecContext(ctx, `
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO sends (
 			id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
 			body_md, body_html, body_text,
@@ -59,9 +65,14 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 		p.MaxSubscriptionID, p.TotalRecipients,
 		p.UnsubscribeMode, nullString(p.UnsubscribeRedirectURL), nullString(p.UnsubscribeExternalURL),
 		nullString(p.NotifyEmail), now, now,
-	)
-	if err != nil {
+	); err != nil {
 		return nil, fmt.Errorf("insert send: %w", err)
+	}
+	if err := s.initSendStatsRow(ctx, tx, id); err != nil {
+		return nil, fmt.Errorf("insert send_stats: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 	return s.GetSend(ctx, id)
 }
@@ -131,11 +142,18 @@ func (s *Store) UpdateSendStatus(ctx context.Context, id string, status models.S
 	if status == models.SendStatusCompleted || status == models.SendStatusFailed || status == models.SendStatusCancelled {
 		completedAt = now
 	}
-	_, err := s.DB.ExecContext(ctx,
+	if _, err := s.DB.ExecContext(ctx,
 		`UPDATE sends SET status = ?, last_error = ?, updated_at = ?, completed_at = COALESCE(?, completed_at) WHERE id = ?`,
 		status, nullString(lastErr), now, completedAt, id,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	if completedAt != nil {
+		if err := s.MarkSendCompletedForStats(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) AdvanceSendCursor(ctx context.Context, id string, lastSubID int64) error {

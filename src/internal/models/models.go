@@ -92,6 +92,24 @@ type Send struct {
 	CompletedAt            *time.Time      `json:"completed_at,omitempty"`
 }
 
+type SendStats struct {
+	SendID         string     `json:"send_id"`
+	Sent           uint64     `json:"sent"`
+	Delivered      uint64     `json:"delivered"`
+	Opened         uint64     `json:"opened"`
+	Clicked        uint64     `json:"clicked"`
+	Failed         uint64     `json:"failed"`
+	Complained     uint64     `json:"complained"`
+	Unsubscribed   uint64     `json:"unsubscribed"`
+	FirstFetchedAt *time.Time `json:"first_fetched_at,omitempty"`
+	LastFetchedAt  *time.Time `json:"last_fetched_at,omitempty"`
+	NextFetchAt    *time.Time `json:"next_fetch_at,omitempty"`
+	IsFinal        bool       `json:"is_final"`
+	FetchError     *string    `json:"fetch_error,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
 type BatchStatus string
 
 const (

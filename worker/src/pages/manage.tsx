@@ -9,6 +9,7 @@ export type ManageData = {
   lists: ManageListState[];
   done?: boolean;
   deltas?: SubscriptionDelta[];
+  alreadyUnsubscribed?: boolean;
   error?: string;
 };
 
@@ -26,7 +27,12 @@ export function ManagePage(data: ManageData) {
 ${data.error
     ? html`<h1>That link is no longer valid.</h1>
       <p class="muted">${data.error}</p>`
-    : data.done
+    : data.alreadyUnsubscribed
+      ? html`<h1>You're unsubscribed.</h1>
+        ${data.email
+          ? html`<p class="muted">${data.email} is not subscribed to any lists.</p>`
+          : html`<p class="muted">There are no active subscriptions for this link.</p>`}`
+      : data.done
       ? html`<h1>Your preferences have been saved.</h1>
         <p class="muted">Changes for <span class="email">${data.email}</span>:</p>
 ${data.deltas && data.deltas.length > 0

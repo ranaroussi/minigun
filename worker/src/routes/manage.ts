@@ -33,6 +33,13 @@ type ManageCtx = {
   company: Awaited<ReturnType<typeof getCompanyByID>>;
 };
 
+class AlreadyUnsubscribedError extends Error {
+  constructor(message = 'already unsubscribed') {
+    super(message);
+    this.name = 'AlreadyUnsubscribedError';
+  }
+}
+
 async function loadContext(env: Env, tokenStr: string): Promise<ManageCtx> {
   let t;
   try {
@@ -41,26 +48,24 @@ async function loadContext(env: Env, tokenStr: string): Promise<ManageCtx> {
     if (err instanceof InvalidTokenError) throw new Error('Invalid or expired manage link.');
     throw err;
   }
-  const snd = await getSend(env.DB, t.sendID).catch(() => {
-    throw new Error('Send not found.');
-  });
-  const sub = await getSubscriptionByID(env.DB, t.subscriptionID).catch(() => {
-    throw new Error('Subscription not found.');
-  });
-  const contact = await getContactByID(env.DB, sub.contact_id).catch(() => {
-    throw new Error('Contact not found.');
-  });
-  const list = await getListByID(env.DB, sub.list_id).catch(() => {
-    throw new Error('List not found.');
-  });
+  // Token is genuine. Any missing record below means the link is stale —
+  // render an "already unsubscribed" page rather than a scary error.
+  const swallow = (err: unknown): never => {
+    if (err instanceof NotFoundError) throw new AlreadyUnsubscribedError();
+    throw err;
+  };
+  const snd = await getSend(env.DB, t.sendID).catch(swallow);
+  const sub = await getSubscriptionByID(env.DB, t.subscriptionID).catch(swallow);
+  const contact = await getContactByID(env.DB, sub.contact_id).catch(swallow);
+  const list = await getListByID(env.DB, sub.list_id).catch(swallow);
   if (!list.company_id) {
-    throw new Error('This list is not associated with a company; manage page is not available.');
+    throw new AlreadyUnsubscribedError();
   }
-  const company = await getCompanyByID(env.DB, list.company_id).catch(() => {
-    throw new Error('Company not found.');
-  });
+  const company = await getCompanyByID(env.DB, list.company_id).catch(swallow);
   return { token: tokenStr, send: snd, contact, list, company };
 }
+
+export { AlreadyUnsubscribedError };
 
 export function mountManage(app: Hono<{ Bindings: Env }>) {
   app.get('/manage/:token', async (c) => {
@@ -77,6 +82,17 @@ export function mountManage(app: Hono<{ Bindings: Env }>) {
         }),
       );
     } catch (err) {
+      if (err instanceof AlreadyUnsubscribedError) {
+        return htmlResponse(
+          ManagePage({
+            email: '',
+            companyName: '',
+            token: tokenStr,
+            lists: [],
+            alreadyUnsubscribed: true,
+          }),
+        );
+      }
       return htmlResponse(
         ManagePage({
           email: '',
@@ -96,6 +112,17 @@ export function mountManage(app: Hono<{ Bindings: Env }>) {
     try {
       ctx = await loadContext(c.env, tokenStr);
     } catch (err) {
+      if (err instanceof AlreadyUnsubscribedError) {
+        return htmlResponse(
+          ManagePage({
+            email: '',
+            companyName: '',
+            token: tokenStr,
+            lists: [],
+            alreadyUnsubscribed: true,
+          }),
+        );
+      }
       return htmlResponse(
         ManagePage({
           email: '',

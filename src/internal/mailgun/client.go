@@ -303,6 +303,46 @@ func defaultStr(s, def string) string {
 	return s
 }
 
+// PerSendTotals are the aggregate counts Mailgun reports for a single MiniGun
+// send (identified by tag = send.ID). Unsubscribed is intentionally omitted —
+// MiniGun owns that count via its own unsubscribe_events table.
+type PerSendTotals struct {
+	Sent       uint64
+	Delivered  uint64
+	Opened     uint64
+	Clicked    uint64
+	Failed     uint64
+	Complained uint64
+}
+
+func (c *Client) PerSendMetrics(ctx context.Context, sendID string, sendCreatedAt time.Time) (*PerSendTotals, error) {
+	start := sendCreatedAt.Add(-1 * time.Hour)
+	end := time.Now().Add(1 * time.Hour)
+	mr := MetricsRequest{
+		Start:      start,
+		End:        end,
+		Resolution: "day",
+		Metrics:    []string{"accepted_count", "delivered_count", "failed_count", "opened_count", "clicked_count", "complained_count"},
+		Tag:        sendID,
+	}
+	resp, err := c.Metrics(ctx, mr)
+	if err != nil {
+		return nil, err
+	}
+	totals := PerSendTotals{}
+	if resp != nil {
+		for _, item := range resp.Items {
+			totals.Sent += item.Metrics["accepted_count"]
+			totals.Delivered += item.Metrics["delivered_count"]
+			totals.Opened += item.Metrics["opened_count"]
+			totals.Clicked += item.Metrics["clicked_count"]
+			totals.Failed += item.Metrics["failed_count"]
+			totals.Complained += item.Metrics["complained_count"]
+		}
+	}
+	return &totals, nil
+}
+
 func ParseRetryAfter(h string) time.Duration {
 	if h == "" {
 		return 0

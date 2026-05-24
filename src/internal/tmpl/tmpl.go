@@ -23,11 +23,12 @@ type UnsubscribeData struct {
 }
 
 type ManageData struct {
-	Token       string
-	Email       string
-	CompanyName string
-	Lists       []store.ManageListState
-	Deltas      []store.SubscriptionDelta
-	Done        bool
-	Error       string
+	Token               string
+	Email               string
+	CompanyName         string
+	Lists               []store.ManageListState
+	Deltas              []store.SubscriptionDelta
+	Done                bool
+	AlreadyUnsubscribed bool
+	Error               string
 }

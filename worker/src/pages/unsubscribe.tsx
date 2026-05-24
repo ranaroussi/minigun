@@ -25,8 +25,15 @@ ${data.turnstileSiteKey
 <body>
 <div class="card">
 ${data.done
-    ? html`<h1>You've been unsubscribed from ${data.listName}.</h1>
-      <p class="muted">${data.email} will no longer receive these emails.</p>`
+    ? data.listName
+      ? html`<h1>You've been unsubscribed from ${data.listName}.</h1>
+        ${data.email
+          ? html`<p class="muted">${data.email} will no longer receive these emails.</p>`
+          : html`<p class="muted">You will no longer receive these emails.</p>`}`
+      : html`<h1>You're unsubscribed.</h1>
+        ${data.email
+          ? html`<p class="muted">${data.email} will no longer receive these emails.</p>`
+          : html`<p class="muted">You will no longer receive these emails.</p>`}`
     : data.error
       ? html`<h1>That link is no longer valid.</h1>
         <p class="muted">${data.error}</p>`

@@ -22,6 +22,15 @@ type manageContext struct {
 	Company   *models.Company
 }
 
+var errAlreadyUnsubscribed = errors.New("already unsubscribed")
+
+func mapNotFound(err error) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return errAlreadyUnsubscribed
+	}
+	return err
+}
+
 func (s *Server) loadManageContext(ctx context.Context, tokenStr string) (*manageContext, error) {
 	t, err := token.Verify(s.cfg.HMACSecret, tokenStr)
 	if err != nil {
@@ -29,26 +38,26 @@ func (s *Server) loadManageContext(ctx context.Context, tokenStr string) (*manag
 	}
 	snd, err := s.store.GetSend(ctx, t.SendID)
 	if err != nil {
-		return nil, errors.New("Send not found.")
+		return nil, mapNotFound(err)
 	}
 	sub, err := s.store.GetSubscriptionByID(ctx, t.SubscriptionID)
 	if err != nil {
-		return nil, errors.New("Subscription not found.")
+		return nil, mapNotFound(err)
 	}
 	contact, err := s.store.GetContactByID(ctx, sub.ContactID)
 	if err != nil {
-		return nil, errors.New("Contact not found.")
+		return nil, mapNotFound(err)
 	}
 	list, err := s.store.GetListByID(ctx, sub.ListID)
 	if err != nil {
-		return nil, errors.New("List not found.")
+		return nil, mapNotFound(err)
 	}
 	if list.CompanyID == "" {
-		return nil, errors.New("This list is not associated with a company; manage page is not available.")
+		return nil, errAlreadyUnsubscribed
 	}
 	company, err := s.store.GetCompanyByID(ctx, list.CompanyID)
 	if err != nil {
-		return nil, errors.New("Company not found.")
+		return nil, mapNotFound(err)
 	}
 	return &manageContext{
 		Token:   tokenStr,
@@ -64,6 +73,10 @@ func (s *Server) handleManageGet(w http.ResponseWriter, r *http.Request) {
 	tokenStr := chi.URLParam(r, "token")
 	mc, err := s.loadManageContext(r.Context(), tokenStr)
 	if err != nil {
+		if errors.Is(err, errAlreadyUnsubscribed) {
+			s.renderManagePage(w, tmpl.ManageData{AlreadyUnsubscribed: true})
+			return
+		}
 		s.renderManagePage(w, tmpl.ManageData{Error: err.Error()})
 		return
 	}
@@ -88,6 +101,10 @@ func (s *Server) handleManagePost(w http.ResponseWriter, r *http.Request) {
 	}
 	mc, err := s.loadManageContext(r.Context(), tokenStr)
 	if err != nil {
+		if errors.Is(err, errAlreadyUnsubscribed) {
+			s.renderManagePage(w, tmpl.ManageData{AlreadyUnsubscribed: true})
+			return
+		}
 		s.renderManagePage(w, tmpl.ManageData{Error: err.Error()})
 		return
 	}
