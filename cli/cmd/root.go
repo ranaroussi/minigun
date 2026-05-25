@@ -10,7 +10,9 @@ import (
 	"github.com/ranaroussi/minigun/cli/internal/client"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.2"
+
+const defaultAPIURL = "http://127.0.0.1:8080"
 
 var (
 	apiURL   string
@@ -27,8 +29,8 @@ var (
 )
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&apiURL, "api", envOr("MINIGUN_API_URL", "http://127.0.0.1:8080"), "MiniGun server URL (env: MINIGUN_API_URL)")
-	rootCmd.PersistentFlags().StringVar(&apiToken, "token", os.Getenv("MINIGUN_API_TOKEN"), "API token, sent as Bearer (env: MINIGUN_API_TOKEN)")
+	rootCmd.PersistentFlags().StringVar(&apiURL, "api", "", "MiniGun server URL (env: MINIGUN_API_URL, default \""+defaultAPIURL+"\")")
+	rootCmd.PersistentFlags().StringVar(&apiToken, "token", "", "API token, sent as Bearer (env: MINIGUN_API_TOKEN)")
 }
 
 func Execute() {
@@ -39,14 +41,18 @@ func Execute() {
 }
 
 func newClient() *client.Client {
-	return client.New(apiURL, apiToken)
-}
-
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
+	url := apiURL
+	if url == "" {
+		url = os.Getenv("MINIGUN_API_URL")
 	}
-	return def
+	if url == "" {
+		url = defaultAPIURL
+	}
+	token := apiToken
+	if token == "" {
+		token = os.Getenv("MINIGUN_API_TOKEN")
+	}
+	return client.New(url, token)
 }
 
 func printJSON(raw []byte) {
