@@ -85,6 +85,14 @@ func (c *Client) SendMessage(ctx context.Context, m *Message) (*SendResponse, er
 	for _, to := range m.To {
 		add("to", to)
 	}
+	// Explicitly set the RFC 5322 Sender header to match From. Without this,
+	// when From.domain differs from the sending domain Mailgun synthesizes a
+	// VERP-style Sender (e.g. "user=apex.com@subdomain.com") for bounce
+	// routing and Gmail/Apple Mail surface it in the visible message UI.
+	// RFC 5322 §3.6.2 says when Sender == From, well-behaved clients may
+	// omit Sender from display entirely, so this is harmless even when the
+	// domains already align.
+	add("h:Sender", m.From)
 	add("subject", m.Subject)
 	if m.Text != "" {
 		add("text", m.Text)

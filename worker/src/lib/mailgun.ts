@@ -45,6 +45,14 @@ export async function sendMessage(env: Env, m: Message): Promise<SendResponse> {
   if (!m.domain) throw new Error('mailgun: message.domain is required');
   const form = new FormData();
   form.append('from', m.from);
+  // Explicitly set the RFC 5322 Sender header to match From. Without this,
+  // when From.domain differs from the sending domain Mailgun synthesizes a
+  // VERP-style Sender (e.g. "user=apex.com@subdomain.com") for bounce
+  // routing and Gmail/Apple Mail surface it in the visible message UI.
+  // RFC 5322 §3.6.2 says when Sender == From, well-behaved clients may
+  // omit Sender from display entirely, so this is harmless even when the
+  // domains already align.
+  form.append('h:Sender', m.from);
   for (const to of m.to) form.append('to', to);
   form.append('subject', m.subject);
   if (m.text) form.append('text', m.text);
