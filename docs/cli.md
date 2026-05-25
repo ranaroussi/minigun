@@ -7,18 +7,20 @@ The CLI is a separate, slim Go module in [`cli/`](../cli/) so you don't pull the
 ## Install
 
 ```bash
-go install github.com/ranaroussi/minigun/cli@latest
+go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
 ```
+
+`go install` names the binary after the last path component, so this lands as `minigun` in `$(go env GOBIN)` (or `$(go env GOPATH)/bin` if `GOBIN` is unset). Make sure that directory is on your `$PATH`.
 
 Or build from a local checkout:
 
 ```bash
 cd cli
-go build -o minigun .
+go build -o minigun ./cmd/minigun
 mv minigun /usr/local/bin/        # or anywhere on PATH
 ```
 
-The binary is named `minigun`. If you also run the server binary on the same machine, alias one of them.
+If you also run the server binary on the same machine, alias one of them.
 
 ## Configuration
 

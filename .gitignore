@@ -6,7 +6,9 @@ credentials.md
 
 # Go
 bin/
-minigun
+# Built binaries (anchored so cli/cmd/minigun/ package dir is NOT ignored)
+/cli/minigun
+/src/minigun
 *.test
 *.out
 coverage.out

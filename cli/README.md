@@ -9,14 +9,16 @@ The same binary also speaks the [Model Context Protocol](https://modelcontextpro
 ## Install
 
 ```bash
-go install github.com/ranaroussi/minigun/cli@latest
+go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
 ```
+
+`go install` names the binary `minigun` (after the last path component). Make sure `$(go env GOBIN)` (or `$(go env GOPATH)/bin`) is on your `$PATH`.
 
 Or build from a local checkout:
 
 ```bash
 cd cli
-go build -o minigun .
+go build -o minigun ./cmd/minigun
 mv minigun /usr/local/bin/
 ```
 

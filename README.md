@@ -11,7 +11,7 @@ docker run -d --name minigun --restart unless-stopped \
   -e MINIGUN_API_TOKEN="$(openssl rand -hex 32)" \
   ghcr.io/ranaroussi/minigun:latest
 
-go install github.com/ranaroussi/minigun/cli@latest
+go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
 minigun list create --name "Weekly Newsletter" --slug newsletter
 minigun contact add newsletter ran@example.com --params '{"first_name":"Ran"}'
 minigun send bulk --list newsletter --subject "Weekly update" \
@@ -64,7 +64,7 @@ Three flavors, pick one. They all run the same server.
 Then install the CLI on your laptop:
 
 ```bash
-go install github.com/ranaroussi/minigun/cli@latest
+go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
 ```
 
 The CLI also doubles as an MCP server for Claude Desktop, Cursor, Zed, and other AI clients. See [docs/cli.md](./docs/cli.md) for the full command + MCP reference.
