@@ -1,5 +1,5 @@
 import { Context, Hono } from 'hono';
-import { Env, publicURL } from '../env';
+import { Env } from '../env';
 import {
   buildBody,
   ensureUnsubFooterHTML,
@@ -26,15 +26,6 @@ import { countUnsubscribesForSend } from '../store/unsubs';
 function emptyToNull(s: string | undefined | null): string | null {
   if (!s || !s.trim()) return null;
   return s;
-}
-
-function kick(env: Env, ctx: ExecutionContext, sendID: string): void {
-  ctx.waitUntil(
-    fetch(`${publicURL(env)}/send/${sendID}/next`, {
-      method: 'POST',
-      headers: { 'x-internal-secret': env.MINIGUN_INTERNAL_SECRET },
-    }).catch((err) => console.error('initial kick failed', sendID, err)),
-  );
 }
 
 async function handleSendStep(c: Context<{ Bindings: Env }>) {
@@ -145,8 +136,26 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       unsubscribe_external_url: emptyToNull(body.unsub_url),
       notify_email: emptyToNull(body.notify_email),
     });
-    kick(c.env, c.executionCtx, snd.id);
-    return c.json({ send_id: snd.id, status: snd.status, total_recipients: total }, 202);
+    // Run the first batch inline rather than self-fetching /send/:id/next.
+    // The fire-and-forget kick was unreliable on this worker (waitUntil could
+    // drop the in-flight subrequest before it landed), leaving sends stuck in
+    // 'queued' until the cron sweep picked them up. Executing step() here
+    // guarantees the chain has actually started before we return 202.
+    // Subsequent batches still ride the scheduleNextStep self-fetch chain;
+    // the cron sweep is the safety net if that drops.
+    let respStatus: typeof snd.status = snd.status;
+    try {
+      const result = await step(c.env, snd.id);
+      if (result.state === 'sent') {
+        respStatus = 'running';
+        scheduleNextStep(c.env, c.executionCtx, snd.id, snd.throttle_ms);
+      } else if (result.state === 'completed') {
+        respStatus = 'completed';
+      }
+    } catch (err) {
+      console.error('initial step failed', snd.id, err);
+    }
+    return c.json({ send_id: snd.id, status: respStatus, total_recipients: total }, 202);
   });
 
   app.post('/send/single', async (c) => {
