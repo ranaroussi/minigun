@@ -100,6 +100,7 @@ export type Send = {
   status: SendStatus;
   batch_size: number;
   throttle_ms: number;
+  test_mode: number;
   last_subscription_id: number;
   max_subscription_id?: number | null;
   total_recipients: number;

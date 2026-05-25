@@ -27,6 +27,7 @@ var (
 	bulkUnsubMode  string
 	bulkUnsubRedir string
 	bulkUnsubURL   string
+	bulkTestMode   bool
 
 	singleTo       string
 	singleSubject  string
@@ -37,6 +38,7 @@ var (
 	singleMDFile   string
 	singleHTMLFile string
 	singleTextFile string
+	singleTestMode bool
 
 	resumeForce bool
 
@@ -73,6 +75,7 @@ var sendBulkCmd = &cobra.Command{
 			"unsub_mode":   bulkUnsubMode,
 			"unsub_redir":  bulkUnsubRedir,
 			"unsub_url":    bulkUnsubURL,
+			"test_mode":    bulkTestMode,
 		}
 		if bulkDomain != "" {
 			body["domain"] = bulkDomain
@@ -95,14 +98,15 @@ var sendSingleCmd = &cobra.Command{
 			return err
 		}
 		body := map[string]any{
-			"to":       singleTo,
-			"subject":  singleSubject,
-			"from":     singleFrom,
-			"reply_to": singleReplyTo,
-			"company":  singleCompany,
-			"md":       md,
-			"html":     html,
-			"text":     text,
+			"to":        singleTo,
+			"subject":   singleSubject,
+			"from":      singleFrom,
+			"reply_to":  singleReplyTo,
+			"company":   singleCompany,
+			"md":        md,
+			"html":      html,
+			"text":      text,
+			"test_mode": singleTestMode,
 		}
 		if singleDomain != "" {
 			body["domain"] = singleDomain
@@ -247,6 +251,7 @@ func init() {
 	sendBulkCmd.Flags().StringVar(&bulkUnsubMode, "unsub-mode", "local", "Unsubscribe mode: local | redirect | external")
 	sendBulkCmd.Flags().StringVar(&bulkUnsubRedir, "unsub-redir", "", "Redirect URL (for unsub-mode=redirect)")
 	sendBulkCmd.Flags().StringVar(&bulkUnsubURL, "unsub-url", "", "External handler URL (for unsub-mode=external)")
+	sendBulkCmd.Flags().BoolVar(&bulkTestMode, "testmode", false, "Mailgun test mode: messages are accepted and logged but not delivered. Useful for dry runs.")
 	_ = sendBulkCmd.MarkFlagRequired("list")
 	_ = sendBulkCmd.MarkFlagRequired("subject")
 	_ = sendBulkCmd.MarkFlagRequired("from")
@@ -260,6 +265,7 @@ func init() {
 	sendSingleCmd.Flags().StringVar(&singleMDFile, "md", "", "Markdown body file")
 	sendSingleCmd.Flags().StringVar(&singleHTMLFile, "html", "", "HTML body file")
 	sendSingleCmd.Flags().StringVar(&singleTextFile, "text", "", "Plain-text body file (optional)")
+	sendSingleCmd.Flags().BoolVar(&singleTestMode, "testmode", false, "Mailgun test mode: message is accepted and logged but not delivered. Useful for dry runs.")
 	_ = sendSingleCmd.MarkFlagRequired("to")
 	_ = sendSingleCmd.MarkFlagRequired("subject")
 	_ = sendSingleCmd.MarkFlagRequired("from")

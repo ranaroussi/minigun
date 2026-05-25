@@ -31,6 +31,7 @@ type bulkSendReq struct {
 	UnsubRedir  string `json:"unsub_redir"`
 	UnsubURL    string `json:"unsub_url"`
 	NotifyEmail string `json:"notify_email"`
+	TestMode    bool   `json:"test_mode"`
 }
 
 func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +124,7 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 		UnsubscribeRedirectURL: emptyToNil(req.UnsubRedir),
 		UnsubscribeExternalURL: emptyToNil(req.UnsubURL),
 		NotifyEmail:            emptyToNil(req.NotifyEmail),
+		TestMode:               req.TestMode,
 	}
 	snd, err := s.store.CreateSend(r.Context(), params)
 	if err != nil {
@@ -141,15 +143,16 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 }
 
 type singleSendReq struct {
-	To      string `json:"to"`
-	From    string `json:"from"`
-	ReplyTo string `json:"reply_to"`
-	Subject string `json:"subject"`
-	Company string `json:"company"`
-	Domain  string `json:"domain"`
-	MD      string `json:"md"`
-	HTML    string `json:"html"`
-	Text    string `json:"text"`
+	To       string `json:"to"`
+	From     string `json:"from"`
+	ReplyTo  string `json:"reply_to"`
+	Subject  string `json:"subject"`
+	Company  string `json:"company"`
+	Domain   string `json:"domain"`
+	MD       string `json:"md"`
+	HTML     string `json:"html"`
+	Text     string `json:"text"`
+	TestMode bool   `json:"test_mode"`
 }
 
 func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +223,7 @@ func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
 		SendingDomain:  sendingDomain,
 		BatchSize:      1,
 		ThrottleMS:     0,
+		TestMode:       req.TestMode,
 	}
 	snd, err := s.store.CreateSend(r.Context(), params)
 	if err != nil {

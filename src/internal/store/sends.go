@@ -24,6 +24,7 @@ type NewSendParams struct {
 	SendingDomain          string
 	BatchSize              int
 	ThrottleMS             int
+	TestMode               bool
 	MaxSubscriptionID      *int64
 	TotalRecipients        int
 	UnsubscribeMode        models.UnsubscribeMode
@@ -55,14 +56,14 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 		INSERT INTO sends (
 			id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
 			body_md, body_html, body_text, sending_domain,
-			status, batch_size, throttle_ms,
+			status, batch_size, throttle_ms, test_mode,
 			last_subscription_id, max_subscription_id, total_recipients,
 			unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
 			notify_email, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, p.Type, p.ListID, p.RecipientEmail, p.Subject, p.FromHeader, nullString(p.ReplyTo), nullString(p.TemplateName),
 		nullString(p.BodyMD), nullString(p.BodyHTML), nullString(p.BodyText), p.SendingDomain,
-		models.SendStatusQueued, p.BatchSize, p.ThrottleMS,
+		models.SendStatusQueued, p.BatchSize, p.ThrottleMS, p.TestMode,
 		p.MaxSubscriptionID, p.TotalRecipients,
 		p.UnsubscribeMode, nullString(p.UnsubscribeRedirectURL), nullString(p.UnsubscribeExternalURL),
 		nullString(p.NotifyEmail), now, now,
@@ -82,7 +83,7 @@ func (s *Store) GetSend(ctx context.Context, id string) (*models.Send, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
 		       body_md, body_html, body_text, sending_domain,
-		       status, batch_size, throttle_ms,
+		       status, batch_size, throttle_ms, test_mode,
 		       last_subscription_id, max_subscription_id, total_recipients,
 		       unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
 		       notify_email, last_error, created_at, updated_at, completed_at
@@ -102,7 +103,7 @@ func scanSend(row *sql.Row) (*models.Send, error) {
 	if err := row.Scan(
 		&s.ID, &s.Type, &listID, &recipEmail, &s.Subject, &s.FromHeader, &replyTo, &tmpl,
 		&bodyMD, &bodyHTML, &bodyText, &s.SendingDomain,
-		&s.Status, &s.BatchSize, &s.ThrottleMS,
+		&s.Status, &s.BatchSize, &s.ThrottleMS, &s.TestMode,
 		&s.LastSubscriptionID, &maxSubID, &s.TotalRecipients,
 		&s.UnsubscribeMode, &unsubRedir, &unsubExt,
 		&notifyEmail, &lastErr, &created, &updated, &completed,

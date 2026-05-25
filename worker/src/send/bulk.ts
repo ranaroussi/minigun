@@ -78,6 +78,7 @@ export async function step(env: Env, sendID: string): Promise<StepResult> {
         minigun_subscription_ids: subIDs.join(','),
         minigun_batch_id: batch.id,
       },
+      testMode: !!snd.test_mode,
     });
     await markBatchStatus(env.DB, batch.id, 'succeeded', JSON.stringify(resp));
     await advanceSendCursor(env.DB, sendID, endID);

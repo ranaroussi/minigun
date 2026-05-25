@@ -133,6 +133,7 @@ func (m *Manager) runSingle(ctx context.Context, snd *models.Send) error {
 		TrackingOpens:         true,
 		TrackingClicks:        true,
 		TrackingUnsubscribeOn: false,
+		TestMode:              snd.TestMode,
 	}
 	if snd.ReplyTo != nil {
 		msg.ReplyTo = *snd.ReplyTo
@@ -217,6 +218,7 @@ func (m *Manager) runBulk(ctx context.Context, snd *models.Send) error {
 				"minigun_subscription_ids": strings.Join(subIDs, ","),
 				"minigun_batch_id":         batch.ID,
 			},
+			TestMode: snd.TestMode,
 		}
 		if snd.ReplyTo != nil {
 			msg.ReplyTo = *snd.ReplyTo

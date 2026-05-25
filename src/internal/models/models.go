@@ -82,6 +82,7 @@ type Send struct {
 	Status                 SendStatus      `json:"status"`
 	BatchSize              int             `json:"batch_size"`
 	ThrottleMS             int             `json:"throttle_ms"`
+	TestMode               bool            `json:"test_mode"`
 	LastSubscriptionID     int64           `json:"last_subscription_id"`
 	MaxSubscriptionID      *int64          `json:"max_subscription_id,omitempty"`
 	TotalRecipients        int             `json:"total_recipients"`

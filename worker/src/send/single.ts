@@ -22,6 +22,7 @@ export async function runSingle(env: Env, sendID: string): Promise<void> {
       trackingOpens: true,
       trackingClicks: true,
       trackingUnsubscribeOn: false,
+      testMode: !!snd.test_mode,
     });
     await updateSendStatus(env.DB, sendID, 'completed', null);
   } catch (err) {

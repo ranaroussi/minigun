@@ -24,6 +24,7 @@ export type NewSendParams = {
   sending_domain: string;
   batch_size?: number;
   throttle_ms?: number;
+  test_mode?: boolean;
   max_subscription_id?: number | null;
   total_recipients?: number;
   unsubscribe_mode?: UnsubscribeMode;
@@ -43,11 +44,11 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
       `INSERT INTO sends (
         id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
         body_md, body_html, body_text, sending_domain,
-        status, batch_size, throttle_ms,
+        status, batch_size, throttle_ms, test_mode,
         last_subscription_id, max_subscription_id, total_recipients,
         unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
         notify_email, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -65,6 +66,7 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
       'queued',
       batchSize,
       throttleMs,
+      p.test_mode ? 1 : 0,
       p.max_subscription_id ?? null,
       p.total_recipients ?? 0,
       mode,
@@ -80,7 +82,7 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
 
 const SEND_COLUMNS = `id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
        body_md, body_html, body_text, sending_domain,
-       status, batch_size, throttle_ms,
+       status, batch_size, throttle_ms, test_mode,
        last_subscription_id, max_subscription_id, total_recipients,
        unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
        notify_email, last_error, created_at, updated_at, completed_at`;

@@ -50,6 +50,8 @@ type Message struct {
 	RecipientVariables map[string]map[string]any
 
 	CustomVars map[string]string
+
+	TestMode bool
 }
 
 type SendResponse struct {
@@ -137,6 +139,9 @@ func (c *Client) SendMessage(ctx context.Context, m *Message) (*SendResponse, er
 	}
 	for k, v := range m.CustomVars {
 		add("v:"+k, v)
+	}
+	if m.TestMode {
+		add("o:testmode", "yes")
 	}
 	if err := mw.Close(); err != nil {
 		return nil, err

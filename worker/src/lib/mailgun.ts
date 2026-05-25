@@ -16,6 +16,7 @@ export type Message = {
   listUnsubscribePost?: string;
   recipientVariables?: Record<string, Record<string, unknown>>;
   customVars?: Record<string, string>;
+  testMode?: boolean;
 };
 
 export type SendResponse = {
@@ -71,6 +72,7 @@ export async function sendMessage(env: Env, m: Message): Promise<SendResponse> {
   if (m.customVars) {
     for (const [k, v] of Object.entries(m.customVars)) form.append('v:' + k, v);
   }
+  if (m.testMode) form.append('o:testmode', 'yes');
 
   const endpoint = `${mailgunApiBase(env)}/v3/${m.domain}/messages`;
   const resp = await fetch(endpoint, {

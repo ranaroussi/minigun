@@ -71,6 +71,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       unsub_redir?: string;
       unsub_url?: string;
       notify_email?: string;
+      test_mode?: boolean;
     }>().catch(() => null);
     if (!body) return c.json({ error: 'invalid JSON' }, 400);
     if (!body.list?.trim() || !body.subject?.trim() || !body.from?.trim()) {
@@ -135,6 +136,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       unsubscribe_redirect_url: emptyToNull(body.unsub_redir),
       unsubscribe_external_url: emptyToNull(body.unsub_url),
       notify_email: emptyToNull(body.notify_email),
+      test_mode: body.test_mode === true,
     });
     // Run the first batch inline rather than self-fetching /send/:id/next.
     // The fire-and-forget kick was unreliable on this worker (waitUntil could
@@ -169,6 +171,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       md?: string;
       html?: string;
       text?: string;
+      test_mode?: boolean;
     }>().catch(() => null);
     if (!body) return c.json({ error: 'invalid JSON' }, 400);
     if (!body.to?.trim() || !body.subject?.trim() || !body.from?.trim()) {
@@ -222,6 +225,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       sending_domain: sendingDomain,
       batch_size: 1,
       throttle_ms: 0,
+      test_mode: body.test_mode === true,
     });
     c.executionCtx.waitUntil(runSingle(c.env, snd.id));
     return c.json({ send_id: snd.id, status: snd.status }, 202);
