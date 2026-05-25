@@ -84,7 +84,7 @@ const DefaultHTMLWrapper = `<!doctype html>
 <meta charset="utf-8" />
 <title>{{subject}}</title>
 </head>
-<body style="font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; line-height:1.5; color:#222; max-width:640px; margin:24px auto; padding:0 16px;">
+<body>
 <span style="display:none !important;color:#fff;height:0;width:0;overflow:hidden;">{{preheader}}</span>
 {{content}}
 </body>
