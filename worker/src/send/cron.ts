@@ -1,5 +1,5 @@
 import { Env, publicURL } from '../env';
-import { listStuckRunningSends } from '../store/sends';
+import { listStuckSends } from '../store/sends';
 
 const STALE_MS = 2 * 60 * 1000;
 
@@ -7,7 +7,7 @@ export async function sweepStuckSends(env: Env): Promise<void> {
   const staleBefore = new Date(Date.now() - STALE_MS).toISOString();
   let stuck;
   try {
-    stuck = await listStuckRunningSends(env.DB, staleBefore);
+    stuck = await listStuckSends(env.DB, staleBefore);
   } catch (err) {
     console.error('cron list stuck sends', err);
     return;

@@ -138,14 +138,14 @@ export async function listRunningSends(db: D1Database): Promise<Send[]> {
   return results;
 }
 
-export async function listStuckRunningSends(
+export async function listStuckSends(
   db: D1Database,
   staleBefore: string,
 ): Promise<Send[]> {
   const { results } = await db
     .prepare(
       `SELECT ${SEND_COLUMNS} FROM sends
-        WHERE status = 'running' AND updated_at < ?
+        WHERE status IN ('queued', 'running') AND updated_at < ?
           AND id NOT IN (SELECT send_id FROM send_batches WHERE status = 'in_flight')
         ORDER BY updated_at ASC`,
     )
