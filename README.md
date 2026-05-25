@@ -186,7 +186,6 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | Env var                        | Required | Default                  | Purpose |
 |--------------------------------|----------|--------------------------|---------|
 | `MAILGUN_API_KEY`              | yes      | —                        | Mailgun API key (HTTP Basic password; user is `api`). |
-| `MAILGUN_DOMAIN`               | no       | derived from each send's `from` | Sending domain. If unset, MiniGun parses the host part of each send's `from` header. |
 | `MAILGUN_REGION`               | no       | `us`                     | `us` or `eu`. |
 | `MAILGUN_API_BASE`             | no       | derived from region      | Explicit override for the API base URL. |
 | `MINIGUN_PUBLIC_URL`           | yes      | —                        | Public origin used to build per-recipient unsubscribe URLs. |

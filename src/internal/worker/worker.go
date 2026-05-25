@@ -119,7 +119,11 @@ func (m *Manager) runSingle(ctx context.Context, snd *models.Send) error {
 	if snd.RecipientEmail == nil {
 		return m.failSend(ctx, snd.ID, "single send missing recipient_email")
 	}
+	if snd.SendingDomain == "" {
+		return m.failSend(ctx, snd.ID, "single send missing sending_domain")
+	}
 	msg := &mailgun.Message{
+		Domain:                snd.SendingDomain,
 		From:                  snd.FromHeader,
 		To:                    []string{*snd.RecipientEmail},
 		Subject:               snd.Subject,
@@ -142,6 +146,9 @@ func (m *Manager) runSingle(ctx context.Context, snd *models.Send) error {
 func (m *Manager) runBulk(ctx context.Context, snd *models.Send) error {
 	if snd.ListID == nil || snd.MaxSubscriptionID == nil {
 		return m.failSend(ctx, snd.ID, "bulk send missing list_id or max_subscription_id")
+	}
+	if snd.SendingDomain == "" {
+		return m.failSend(ctx, snd.ID, "bulk send missing sending_domain")
 	}
 	listID := *snd.ListID
 	maxID := *snd.MaxSubscriptionID
@@ -192,6 +199,7 @@ func (m *Manager) runBulk(ctx context.Context, snd *models.Send) error {
 
 		listUnsub := fmt.Sprintf("<%s>", "%recipient.unsub_url%")
 		msg := &mailgun.Message{
+			Domain:                snd.SendingDomain,
 			From:                  snd.FromHeader,
 			To:                    emails,
 			Subject:               snd.Subject,
@@ -205,9 +213,9 @@ func (m *Manager) runBulk(ctx context.Context, snd *models.Send) error {
 			ListUnsubscribePost:   "List-Unsubscribe=One-Click",
 			RecipientVariables:    recipVars,
 			CustomVars: map[string]string{
-				"minigun_send_id":            snd.ID,
-				"minigun_subscription_ids":   strings.Join(subIDs, ","),
-				"minigun_batch_id":           batch.ID,
+				"minigun_send_id":          snd.ID,
+				"minigun_subscription_ids": strings.Join(subIDs, ","),
+				"minigun_batch_id":         batch.ID,
 			},
 		}
 		if snd.ReplyTo != nil {

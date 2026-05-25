@@ -11,6 +11,7 @@ export async function runSingle(env: Env, sendID: string): Promise<void> {
   await updateSendStatus(env.DB, sendID, 'running', null);
   try {
     await sendMessageWithRetry(env, {
+      domain: snd.sending_domain,
       from: snd.from_header,
       to: [snd.recipient_email],
       subject: snd.subject,

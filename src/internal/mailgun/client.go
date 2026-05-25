@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"mime/multipart"
 	"net/http"
-	"net/mail"
 	"strconv"
 	"strings"
 	"time"
@@ -18,36 +17,20 @@ import (
 
 type Client struct {
 	APIBase string
-	Domain  string
 	APIKey  string
 	HTTP    *http.Client
 }
 
-func New(apiBase, domain, apiKey string) *Client {
+func New(apiBase, apiKey string) *Client {
 	return &Client{
 		APIBase: strings.TrimRight(apiBase, "/"),
-		Domain:  domain,
 		APIKey:  apiKey,
 		HTTP:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
-func (c *Client) sendingDomain(from string) (string, error) {
-	if c.Domain != "" {
-		return c.Domain, nil
-	}
-	addr, err := mail.ParseAddress(from)
-	if err != nil {
-		return "", fmt.Errorf("MAILGUN_DOMAIN is unset and cannot derive sending domain from From header %q: %w", from, err)
-	}
-	at := strings.LastIndex(addr.Address, "@")
-	if at < 0 || at == len(addr.Address)-1 {
-		return "", fmt.Errorf("MAILGUN_DOMAIN is unset and From header %q has no @host part", from)
-	}
-	return addr.Address[at+1:], nil
-}
-
 type Message struct {
+	Domain  string
 	From    string
 	To      []string
 	Subject string
@@ -88,6 +71,9 @@ func (e *APIError) Retryable() bool {
 }
 
 func (c *Client) SendMessage(ctx context.Context, m *Message) (*SendResponse, error) {
+	if m.Domain == "" {
+		return nil, fmt.Errorf("mailgun: message.Domain is required")
+	}
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
 
@@ -148,11 +134,7 @@ func (c *Client) SendMessage(ctx context.Context, m *Message) (*SendResponse, er
 		return nil, err
 	}
 
-	domain, err := c.sendingDomain(m.From)
-	if err != nil {
-		return nil, err
-	}
-	endpoint := fmt.Sprintf("%s/v3/%s/messages", c.APIBase, domain)
+	endpoint := fmt.Sprintf("%s/v3/%s/messages", c.APIBase, m.Domain)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, body)
 	if err != nil {
 		return nil, err

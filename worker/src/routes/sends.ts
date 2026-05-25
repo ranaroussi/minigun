@@ -12,6 +12,7 @@ import { clampLimit, decodeCursor, encodeCursor } from '../lib/pagination';
 import { scheduleNextStep, step } from '../send/bulk';
 import { runSingle } from '../send/single';
 import { sendProgress } from '../store/batches';
+import { resolveCompany } from '../store/companies';
 import { resolveList } from '../store/lists';
 import { createSend, getSend, listSends } from '../store/sends';
 import { getSendStats } from '../store/stats';
@@ -68,6 +69,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       preheader?: string;
       from?: string;
       reply_to?: string;
+      domain?: string;
       md?: string;
       html?: string;
       text?: string;
@@ -92,6 +94,13 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
     } catch (err) {
       if (err instanceof NotFoundError) return c.json({ error: 'list not found' }, 404);
       throw err;
+    }
+    const sendingDomain = (body.domain ?? '').trim().toLowerCase() || list.sending_domain;
+    if (!sendingDomain) {
+      return c.json(
+        { error: 'list has no sending_domain configured; pass "domain" to override or fix the list' },
+        400,
+      );
     }
 
     let bodyHTML: string;
@@ -126,6 +135,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       body_md: emptyToNull(body.md ?? null),
       body_html: bodyHTML,
       body_text: bodyText,
+      sending_domain: sendingDomain,
       batch_size: body.batch_size,
       throttle_ms: body.throttle_ms,
       max_subscription_id: maxID,
@@ -145,6 +155,8 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       from?: string;
       reply_to?: string;
       subject?: string;
+      company?: string;
+      domain?: string;
       md?: string;
       html?: string;
       text?: string;
@@ -153,8 +165,26 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
     if (!body.to?.trim() || !body.subject?.trim() || !body.from?.trim()) {
       return c.json({ error: 'to, subject, and from are required' }, 400);
     }
+    if (!body.company?.trim()) {
+      return c.json({ error: 'company is required (id or slug) to resolve sending domain' }, 400);
+    }
     if (!body.md && !body.html) {
       return c.json({ error: 'either md or html is required' }, 400);
+    }
+
+    let company;
+    try {
+      company = await resolveCompany(c.env.DB, body.company.trim());
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: 'company not found' }, 404);
+      throw err;
+    }
+    const sendingDomain = (body.domain ?? '').trim().toLowerCase() || company.sending_domain;
+    if (!sendingDomain) {
+      return c.json(
+        { error: 'company has no sending_domain configured; pass "domain" to override or fix the company' },
+        400,
+      );
     }
 
     let bodyHTML: string;
@@ -180,6 +210,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       body_md: emptyToNull(body.md ?? null),
       body_html: bodyHTML,
       body_text: bodyText,
+      sending_domain: sendingDomain,
       batch_size: 1,
       throttle_ms: 0,
     });

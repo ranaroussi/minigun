@@ -14,11 +14,12 @@ var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
 type NewListParams struct {
-	Slug        string
-	Name        string
-	CompanyID   string
-	Description string
-	Weight      int
+	Slug          string
+	Name          string
+	CompanyID     string
+	SendingDomain string
+	Description   string
+	Weight        int
 }
 
 func (s *Store) CreateList(ctx context.Context, p NewListParams) (*models.List, error) {
@@ -28,9 +29,9 @@ func (s *Store) CreateList(ctx context.Context, p NewListParams) (*models.List, 
 		p.Weight = 10
 	}
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO lists (id, slug, name, description, weight, company_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, p.Slug, p.Name, p.Description, p.Weight, p.CompanyID, now, now,
+		`INSERT INTO lists (id, slug, name, description, weight, company_id, sending_domain, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, p.Slug, p.Name, p.Description, p.Weight, p.CompanyID, p.SendingDomain, now, now,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -43,7 +44,7 @@ func (s *Store) CreateList(ctx context.Context, p NewListParams) (*models.List, 
 
 const listSelect = `SELECT id, slug, name, COALESCE(description, '') AS description,
 		COALESCE(weight, 10) AS weight, COALESCE(company_id, '') AS company_id,
-		created_at, updated_at FROM lists`
+		sending_domain, created_at, updated_at FROM lists`
 
 func (s *Store) GetListByID(ctx context.Context, id string) (*models.List, error) {
 	return s.queryList(ctx, listSelect+` WHERE id = ?`, id)
@@ -64,7 +65,7 @@ func (s *Store) queryList(ctx context.Context, q string, args ...any) (*models.L
 	row := s.DB.QueryRowContext(ctx, q, args...)
 	var l models.List
 	var created, updated string
-	if err := row.Scan(&l.ID, &l.Slug, &l.Name, &l.Description, &l.Weight, &l.CompanyID, &created, &updated); err != nil {
+	if err := row.Scan(&l.ID, &l.Slug, &l.Name, &l.Description, &l.Weight, &l.CompanyID, &l.SendingDomain, &created, &updated); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}

@@ -8,6 +8,7 @@ var (
 	listName        string
 	listSlug        string
 	listCompany     string
+	listDomain      string
 	listDescription string
 	listWeight      int
 )
@@ -25,6 +26,9 @@ var listCreateCmd = &cobra.Command{
 			"name":    listName,
 			"slug":    listSlug,
 			"company": listCompany,
+		}
+		if listDomain != "" {
+			body["domain"] = listDomain
 		}
 		if listDescription != "" {
 			body["description"] = listDescription
@@ -58,6 +62,7 @@ func init() {
 	listCreateCmd.Flags().StringVar(&listName, "name", "", "Human-readable list name")
 	listCreateCmd.Flags().StringVar(&listSlug, "slug", "", "URL-safe slug (lowercase, hyphens)")
 	listCreateCmd.Flags().StringVar(&listCompany, "company", "", "Company id or slug the list belongs to")
+	listCreateCmd.Flags().StringVar(&listDomain, "domain", "", "Mailgun sending domain (optional; inherits from the company if omitted)")
 	listCreateCmd.Flags().StringVar(&listDescription, "description", "", "Description shown on the preferences page")
 	listCreateCmd.Flags().IntVar(&listWeight, "weight", 0, "Display weight on the preferences page (default 10, lower = higher up)")
 	_ = listCreateCmd.MarkFlagRequired("name")

@@ -17,6 +17,7 @@ type createListReq struct {
 	Name        string `json:"name"`
 	Slug        string `json:"slug"`
 	Company     string `json:"company"`
+	Domain      string `json:"domain"`
 	Description string `json:"description"`
 	Weight      int    `json:"weight"`
 }
@@ -30,6 +31,7 @@ func (s *Server) handleCreateList(w http.ResponseWriter, r *http.Request) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Slug = strings.ToLower(strings.TrimSpace(req.Slug))
 	req.Company = strings.TrimSpace(req.Company)
+	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -51,16 +53,25 @@ func (s *Server) handleCreateList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	sendingDomain := req.Domain
+	if sendingDomain == "" {
+		sendingDomain = company.SendingDomain
+	}
+	if sendingDomain == "" {
+		writeError(w, http.StatusBadRequest, "domain is required and parent company has no sending_domain configured")
+		return
+	}
 	weight := req.Weight
 	if weight == 0 {
 		weight = 10
 	}
 	l, err := s.store.CreateList(r.Context(), store.NewListParams{
-		Slug:        req.Slug,
-		Name:        req.Name,
-		CompanyID:   company.ID,
-		Description: req.Description,
-		Weight:      weight,
+		Slug:          req.Slug,
+		Name:          req.Name,
+		CompanyID:     company.ID,
+		SendingDomain: sendingDomain,
+		Description:   req.Description,
+		Weight:        weight,
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {

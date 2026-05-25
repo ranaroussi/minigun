@@ -19,6 +19,7 @@ type bulkSendReq struct {
 	Preheader  string `json:"preheader"`
 	From       string `json:"from"`
 	ReplyTo    string `json:"reply_to"`
+	Domain     string `json:"domain"`
 	MD         string `json:"md"`
 	HTML       string `json:"html"`
 	Text       string `json:"text"`
@@ -26,10 +27,10 @@ type bulkSendReq struct {
 	BatchSize  int    `json:"batch_size"`
 	ThrottleMS int    `json:"throttle_ms"`
 
-	UnsubMode    string `json:"unsub_mode"`
-	UnsubRedir   string `json:"unsub_redir"`
-	UnsubURL     string `json:"unsub_url"`
-	NotifyEmail  string `json:"notify_email"`
+	UnsubMode   string `json:"unsub_mode"`
+	UnsubRedir  string `json:"unsub_redir"`
+	UnsubURL    string `json:"unsub_url"`
+	NotifyEmail string `json:"notify_email"`
 }
 
 func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
@@ -47,13 +48,22 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	listID, _, err := s.resolveList(r.Context(), req.List)
+	list, err := s.store.ResolveList(r.Context(), req.List)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "list not found")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	listID := list.ID
+	sendingDomain := strings.ToLower(strings.TrimSpace(req.Domain))
+	if sendingDomain == "" {
+		sendingDomain = list.SendingDomain
+	}
+	if sendingDomain == "" {
+		writeError(w, http.StatusBadRequest, `list has no sending_domain configured; pass "domain" to override or fix the list`)
 		return
 	}
 
@@ -104,6 +114,7 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 		BodyMD:                 emptyToNil(req.MD),
 		BodyHTML:               &bodyHTML,
 		BodyText:               &bodyText,
+		SendingDomain:          sendingDomain,
 		BatchSize:              req.BatchSize,
 		ThrottleMS:             req.ThrottleMS,
 		MaxSubscriptionID:      &maxID,
@@ -134,6 +145,8 @@ type singleSendReq struct {
 	From    string `json:"from"`
 	ReplyTo string `json:"reply_to"`
 	Subject string `json:"subject"`
+	Company string `json:"company"`
+	Domain  string `json:"domain"`
 	MD      string `json:"md"`
 	HTML    string `json:"html"`
 	Text    string `json:"text"`
@@ -149,13 +162,33 @@ func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "to, subject, and from are required")
 		return
 	}
+	if strings.TrimSpace(req.Company) == "" {
+		writeError(w, http.StatusBadRequest, "company is required (id or slug) to resolve sending domain")
+		return
+	}
 	if req.MD == "" && req.HTML == "" {
 		writeError(w, http.StatusBadRequest, "either md or html is required")
 		return
 	}
+	company, err := s.store.ResolveCompany(r.Context(), strings.TrimSpace(req.Company))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "company not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sendingDomain := strings.ToLower(strings.TrimSpace(req.Domain))
+	if sendingDomain == "" {
+		sendingDomain = company.SendingDomain
+	}
+	if sendingDomain == "" {
+		writeError(w, http.StatusBadRequest, `company has no sending_domain configured; pass "domain" to override or fix the company`)
+		return
+	}
 
 	var bodyHTML, bodyText string
-	var err error
 	if req.MD != "" {
 		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, "", req.Subject, "")
 		if err != nil {
@@ -184,6 +217,7 @@ func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
 		BodyMD:         emptyToNil(req.MD),
 		BodyHTML:       &bodyHTML,
 		BodyText:       &bodyText,
+		SendingDomain:  sendingDomain,
 		BatchSize:      1,
 		ThrottleMS:     0,
 	}

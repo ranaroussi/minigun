@@ -83,7 +83,6 @@ The Dockerfile is a multi-stage Alpine build. The final image is roughly 15 MB a
 | Env var                        | Required | Default                  | Purpose |
 |--------------------------------|----------|--------------------------|---------|
 | `MAILGUN_API_KEY`              | yes      | —                        | Mailgun API key. Sent as HTTP Basic password (user is `api`). |
-| `MAILGUN_DOMAIN`               | no       | derived from each send's `from` | Sending domain. If unset, MiniGun parses the host part of the `from` header. Set this only to override (e.g., display From on `acme.com`, send through `mg.acme.com`). |
 | `MAILGUN_REGION`               | no       | `us`                     | `us` or `eu`. Selects `https://api.mailgun.net` vs `https://api.eu.mailgun.net`. |
 | `MAILGUN_API_BASE`             | no       | derived from region      | Explicit override for the API base URL. |
 | `MINIGUN_PUBLIC_URL`           | yes      | —                        | Public origin used to build per-recipient unsubscribe URLs. |

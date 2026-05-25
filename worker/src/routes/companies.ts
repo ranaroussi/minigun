@@ -12,16 +12,22 @@ import { AlreadyExistsError, NotFoundError } from '../store/types';
 
 export function mountCompanies(app: Hono<{ Bindings: Env }>) {
   app.post('/companies', async (c) => {
-    const body = await c.req.json<{ name?: string; slug?: string }>().catch(() => null);
+    const body = await c
+      .req.json<{ name?: string; slug?: string; domain?: string }>()
+      .catch(() => null);
     if (!body) return c.json({ error: 'invalid JSON' }, 400);
     const name = (body.name ?? '').trim();
     const slug = (body.slug ?? '').trim().toLowerCase();
+    const domain = (body.domain ?? '').trim().toLowerCase();
     if (!name) return c.json({ error: 'name is required' }, 400);
     if (!isValidSlug(slug)) {
       return c.json({ error: 'slug must be lowercase alphanumerics or hyphens, 1-64 chars' }, 400);
     }
+    if (!domain) {
+      return c.json({ error: 'domain is required (Mailgun sending domain for this company)' }, 400);
+    }
     try {
-      const created = await createCompany(c.env.DB, slug, name);
+      const created = await createCompany(c.env.DB, slug, name, domain);
       return c.json(created, 201);
     } catch (err) {
       if (err instanceof AlreadyExistsError) {

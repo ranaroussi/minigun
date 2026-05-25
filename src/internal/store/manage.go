@@ -18,7 +18,7 @@ type ManageListState struct {
 func (s *Store) GetCompanyListsWithSubscription(ctx context.Context, companyID, contactID string) ([]ManageListState, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT l.id, l.slug, l.name, COALESCE(l.description, ''), COALESCE(l.weight, 10),
-		       COALESCE(l.company_id, ''), l.created_at, l.updated_at,
+		       COALESCE(l.company_id, ''), l.sending_domain, l.created_at, l.updated_at,
 		       subs.subscribed, subs.subscribed_at
 		FROM lists l
 		LEFT JOIN subscriptions subs ON subs.list_id = l.id AND subs.contact_id = ?
@@ -38,7 +38,7 @@ func (s *Store) GetCompanyListsWithSubscription(ctx context.Context, companyID, 
 		var created, updated string
 		var sub sql.NullInt64
 		var subAt sql.NullString
-		if err := rows.Scan(&l.ID, &l.Slug, &l.Name, &l.Description, &l.Weight, &l.CompanyID, &created, &updated, &sub, &subAt); err != nil {
+		if err := rows.Scan(&l.ID, &l.Slug, &l.Name, &l.Description, &l.Weight, &l.CompanyID, &l.SendingDomain, &created, &updated, &sub, &subAt); err != nil {
 			return nil, err
 		}
 		if l.CreatedAt, err = parseTime(created); err != nil {

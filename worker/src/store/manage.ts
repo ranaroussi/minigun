@@ -15,7 +15,7 @@ export async function getCompanyListsWithSubscription(
     .prepare(
       `SELECT l.id, l.slug, l.name, COALESCE(l.description, '') AS description,
               COALESCE(l.weight, 10) AS weight, COALESCE(l.company_id, '') AS company_id,
-              l.created_at, l.updated_at,
+              l.sending_domain, l.created_at, l.updated_at,
               subs.subscribed AS subscribed, subs.subscribed_at AS subscribed_at
          FROM lists l
          LEFT JOIN subscriptions subs ON subs.list_id = l.id AND subs.contact_id = ?
@@ -32,6 +32,7 @@ export async function getCompanyListsWithSubscription(
       description: r.description,
       weight: r.weight,
       company_id: r.company_id,
+      sending_domain: r.sending_domain,
       created_at: r.created_at,
       updated_at: r.updated_at,
     };

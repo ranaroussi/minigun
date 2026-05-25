@@ -13,13 +13,14 @@ export type NewListParams = {
   slug: string;
   name: string;
   company_id: string;
+  sending_domain: string;
   description?: string;
   weight?: number;
 };
 
 const LIST_SELECT = `SELECT id, slug, name, COALESCE(description, '') AS description,
        COALESCE(weight, 10) AS weight, COALESCE(company_id, '') AS company_id,
-       created_at, updated_at FROM lists`;
+       sending_domain, created_at, updated_at FROM lists`;
 
 export async function createList(db: D1Database, p: NewListParams): Promise<List> {
   const id = newList();
@@ -29,10 +30,10 @@ export async function createList(db: D1Database, p: NewListParams): Promise<List
   try {
     await db
       .prepare(
-        `INSERT INTO lists (id, slug, name, description, weight, company_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO lists (id, slug, name, description, weight, company_id, sending_domain, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, p.slug, p.name, description, weight, p.company_id, now, now)
+      .bind(id, p.slug, p.name, description, weight, p.company_id, p.sending_domain, now, now)
       .run();
   } catch (err) {
     if (isUniqueViolation(err)) throw new AlreadyExistsError();
@@ -66,7 +67,7 @@ export async function listLists(db: D1Database): Promise<ListSummary[]> {
     .prepare(
       `SELECT l.id, l.slug, l.name, COALESCE(l.description, '') AS description,
               COALESCE(l.weight, 10) AS weight, COALESCE(l.company_id, '') AS company_id,
-              l.created_at, l.updated_at,
+              l.sending_domain, l.created_at, l.updated_at,
               COALESCE(SUM(CASE WHEN subs.subscribed = 1 THEN 1 ELSE 0 END), 0) AS subscribed_count
          FROM lists l
          LEFT JOIN subscriptions subs ON subs.list_id = l.id
@@ -82,7 +83,7 @@ export async function getListDetails(db: D1Database, listID: string): Promise<Li
     .prepare(
       `SELECT l.id, l.slug, l.name, COALESCE(l.description, '') AS description,
               COALESCE(l.weight, 10) AS weight, COALESCE(l.company_id, '') AS company_id,
-              l.created_at, l.updated_at,
+              l.sending_domain, l.created_at, l.updated_at,
               COALESCE(SUM(CASE WHEN subs.subscribed = 1 THEN 1 ELSE 0 END), 0) AS subscribed_count,
               COUNT(subs.id) AS total_count
          FROM lists l

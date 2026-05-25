@@ -39,9 +39,6 @@ npx wrangler secret put MINIGUN_HMAC_SECRET       # openssl rand -hex 32
 npx wrangler secret put MINIGUN_INTERNAL_SECRET   # openssl rand -hex 32
 npx wrangler secret put MINIGUN_API_TOKEN         # openssl rand -hex 32 (gates the public API)
 
-# Optional secrets
-npx wrangler secret put MAILGUN_DOMAIN            # only if you want to override the From-derived domain
-
 # Deploy
 npx wrangler deploy
 ```
@@ -64,7 +61,6 @@ If you bind to a custom domain (recommended), update the `routes` block in `work
 | Secret                    | Required | Purpose |
 |---------------------------|----------|---------|
 | `MAILGUN_API_KEY`         | yes      | Mailgun API key. Sent as HTTP Basic password. |
-| `MAILGUN_DOMAIN`          | no       | Sending domain. If unset, the worker parses the host part of each send's `from` header. Set only to override (e.g., display From on `acme.com`, send through `mg.acme.com`). |
 | `MINIGUN_HMAC_SECRET`     | yes      | HMAC key for unsubscribe / manage tokens. Must match the Go server if you ever want to cross-verify. |
 | `MINIGUN_API_TOKEN`       | yes      | Bearer token required on every API request. The `/`, `/healthz`, `/u/`, and `/manage/` routes stay public. |
 | `MINIGUN_INTERNAL_SECRET` | yes      | Implementation detail — gates the worker's self-fetches to `/send/:id/next`. The chain and cron use it; operators never need to know it. |

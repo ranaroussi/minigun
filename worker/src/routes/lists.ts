@@ -13,6 +13,7 @@ export function mountLists(app: Hono<{ Bindings: Env }>) {
       name?: string;
       slug?: string;
       company?: string;
+      domain?: string;
       description?: string;
       weight?: number;
     }>().catch(() => null);
@@ -20,18 +21,28 @@ export function mountLists(app: Hono<{ Bindings: Env }>) {
     const name = (body.name ?? '').trim();
     const slug = (body.slug ?? '').trim().toLowerCase();
     const companyKey = (body.company ?? '').trim();
+    const explicitDomain = (body.domain ?? '').trim().toLowerCase();
     if (!name) return c.json({ error: 'name is required' }, 400);
     if (!isValidSlug(slug)) {
       return c.json({ error: 'slug must be lowercase alphanumerics or hyphens, 1-64 chars' }, 400);
     }
     if (!companyKey) return c.json({ error: 'company is required (id or slug)' }, 400);
     let companyID: string;
+    let inheritedDomain: string;
     try {
       const company = await resolveCompany(c.env.DB, companyKey);
       companyID = company.id;
+      inheritedDomain = company.sending_domain;
     } catch (err) {
       if (err instanceof NotFoundError) return c.json({ error: 'company not found' }, 404);
       throw err;
+    }
+    const sendingDomain = explicitDomain || inheritedDomain;
+    if (!sendingDomain) {
+      return c.json(
+        { error: 'domain is required and parent company has no sending_domain configured' },
+        400,
+      );
     }
     const weight = body.weight && body.weight > 0 ? body.weight : 10;
     try {
@@ -39,6 +50,7 @@ export function mountLists(app: Hono<{ Bindings: Env }>) {
         slug,
         name,
         company_id: companyID,
+        sending_domain: sendingDomain,
         description: body.description ?? '',
         weight,
       });

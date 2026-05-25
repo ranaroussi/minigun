@@ -21,6 +21,7 @@ type NewSendParams struct {
 	BodyMD                 *string
 	BodyHTML               *string
 	BodyText               *string
+	SendingDomain          string
 	BatchSize              int
 	ThrottleMS             int
 	MaxSubscriptionID      *int64
@@ -53,14 +54,14 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO sends (
 			id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
-			body_md, body_html, body_text,
+			body_md, body_html, body_text, sending_domain,
 			status, batch_size, throttle_ms,
 			last_subscription_id, max_subscription_id, total_recipients,
 			unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
 			notify_email, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, p.Type, p.ListID, p.RecipientEmail, p.Subject, p.FromHeader, nullString(p.ReplyTo), nullString(p.TemplateName),
-		nullString(p.BodyMD), nullString(p.BodyHTML), nullString(p.BodyText),
+		nullString(p.BodyMD), nullString(p.BodyHTML), nullString(p.BodyText), p.SendingDomain,
 		models.SendStatusQueued, p.BatchSize, p.ThrottleMS,
 		p.MaxSubscriptionID, p.TotalRecipients,
 		p.UnsubscribeMode, nullString(p.UnsubscribeRedirectURL), nullString(p.UnsubscribeExternalURL),
@@ -80,7 +81,7 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 func (s *Store) GetSend(ctx context.Context, id string) (*models.Send, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT id, type, list_id, recipient_email, subject, from_header, reply_to, template_name,
-		       body_md, body_html, body_text,
+		       body_md, body_html, body_text, sending_domain,
 		       status, batch_size, throttle_ms,
 		       last_subscription_id, max_subscription_id, total_recipients,
 		       unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
@@ -100,7 +101,7 @@ func scanSend(row *sql.Row) (*models.Send, error) {
 
 	if err := row.Scan(
 		&s.ID, &s.Type, &listID, &recipEmail, &s.Subject, &s.FromHeader, &replyTo, &tmpl,
-		&bodyMD, &bodyHTML, &bodyText,
+		&bodyMD, &bodyHTML, &bodyText, &s.SendingDomain,
 		&s.Status, &s.BatchSize, &s.ThrottleMS,
 		&s.LastSubscriptionID, &maxSubID, &s.TotalRecipients,
 		&s.UnsubscribeMode, &unsubRedir, &unsubExt,

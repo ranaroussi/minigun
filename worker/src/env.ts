@@ -6,7 +6,6 @@ export type Env = {
   MAILGUN_API_BASE?: string;
 
   MAILGUN_API_KEY: string;
-  MAILGUN_DOMAIN?: string;
   REDIRECT_URL?: string;
   MINIGUN_HMAC_SECRET: string;
   MINIGUN_INTERNAL_SECRET: string;

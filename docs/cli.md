@@ -46,10 +46,36 @@ Probe the server's `/healthz` endpoint.
 minigun health
 ```
 
+### `minigun company create`
+
+Every list is owned by a company, and a company carries the Mailgun sending domain that its lists inherit by default.
+
+```bash
+minigun company create \
+  --name "Acme Co" \
+  --slug acme \
+  --domain mail.acme.com
+```
+
+`--domain` is required: it's the Mailgun-verified sending domain MiniGun will use when posting to the Mailgun API for any send under this company.
+
 ### `minigun list create`
 
 ```bash
-minigun list create --name "Weekly Newsletter" --slug newsletter
+minigun list create \
+  --name "Weekly Newsletter" \
+  --slug newsletter \
+  --company acme
+```
+
+The list inherits its `sending_domain` from `--company` at creation time. If you operate one company across multiple Mailgun domains, pass an explicit `--domain` to override the inherited value for this list only:
+
+```bash
+minigun list create \
+  --name "Operational Alerts" \
+  --slug ops \
+  --company acme \
+  --domain alerts.acme.com
 ```
 
 ### `minigun contact add <list> <email>`
@@ -82,6 +108,8 @@ minigun send bulk \
   --notify "ran@example.com"
 ```
 
+The Mailgun sending domain is read from `list.sending_domain` (set when you created the list). Pass `--domain mail.test.example.com` to override for this one send — the resolved value is persisted on the send row so every `/next` batch in the chain uses the same domain.
+
 Optional unsubscribe-mode flags:
 
 ```bash
@@ -96,8 +124,11 @@ minigun send single \
   --to ran@example.com \
   --subject "Hello" \
   --from "Ran <ran@example.com>" \
+  --company acme \
   --md ./hello.md
 ```
+
+Single transactional sends don't belong to a list, so `--company` is required: MiniGun resolves the sending domain from `company.sending_domain`. Pass `--domain` to override.
 
 ### `minigun send status <id>`
 

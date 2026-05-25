@@ -9,13 +9,20 @@ import {
   nowISO,
 } from './types';
 
-export async function createCompany(db: D1Database, slug: string, name: string): Promise<Company> {
+export async function createCompany(
+  db: D1Database,
+  slug: string,
+  name: string,
+  sendingDomain: string,
+): Promise<Company> {
   const id = newCompany();
   const now = nowISO();
   try {
     await db
-      .prepare('INSERT INTO companies (id, slug, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .bind(id, slug, name, now, now)
+      .prepare(
+        'INSERT INTO companies (id, slug, name, sending_domain, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .bind(id, slug, name, sendingDomain, now, now)
       .run();
   } catch (err) {
     if (isUniqueViolation(err)) throw new AlreadyExistsError();
@@ -24,9 +31,11 @@ export async function createCompany(db: D1Database, slug: string, name: string):
   return (await getCompanyByID(db, id)) as Company;
 }
 
+const COMPANY_SELECT = 'SELECT id, slug, name, sending_domain, created_at, updated_at FROM companies';
+
 export async function getCompanyByID(db: D1Database, id: string): Promise<Company> {
   const row = await db
-    .prepare('SELECT id, slug, name, created_at, updated_at FROM companies WHERE id = ?')
+    .prepare(`${COMPANY_SELECT} WHERE id = ?`)
     .bind(id)
     .first<Company>();
   if (!row) throw new NotFoundError();
@@ -35,7 +44,7 @@ export async function getCompanyByID(db: D1Database, id: string): Promise<Compan
 
 export async function getCompanyBySlug(db: D1Database, slug: string): Promise<Company> {
   const row = await db
-    .prepare('SELECT id, slug, name, created_at, updated_at FROM companies WHERE slug = ?')
+    .prepare(`${COMPANY_SELECT} WHERE slug = ?`)
     .bind(slug)
     .first<Company>();
   if (!row) throw new NotFoundError();
@@ -53,7 +62,7 @@ export async function resolveCompany(db: D1Database, idOrSlug: string): Promise<
 export async function listCompanies(db: D1Database): Promise<CompanySummary[]> {
   const { results } = await db
     .prepare(
-      `SELECT c.id, c.slug, c.name, c.created_at, c.updated_at,
+      `SELECT c.id, c.slug, c.name, c.sending_domain, c.created_at, c.updated_at,
               COALESCE(COUNT(l.id), 0) AS list_count
          FROM companies c
          LEFT JOIN lists l ON l.company_id = c.id
@@ -69,7 +78,7 @@ export async function listsForCompany(db: D1Database, companyID: string): Promis
     .prepare(
       `SELECT id, slug, name, COALESCE(description, '') AS description,
               COALESCE(weight, 10) AS weight, COALESCE(company_id, '') AS company_id,
-              created_at, updated_at
+              sending_domain, created_at, updated_at
          FROM lists
         WHERE company_id = ?
         ORDER BY weight ASC, name ASC`,

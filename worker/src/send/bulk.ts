@@ -59,6 +59,7 @@ export async function step(env: Env, sendID: string): Promise<StepResult> {
 
   try {
     const resp = await sendMessageWithRetry(env, {
+      domain: snd.sending_domain,
       from: snd.from_header,
       to: emails,
       subject: snd.subject,

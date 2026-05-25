@@ -32,7 +32,6 @@ crons = ["* * * * *"]
 
 # Secrets (set via `wrangler secret put <NAME>`):
 #   MAILGUN_API_KEY        — Mailgun API key
-#   MAILGUN_DOMAIN         — Mailgun sending domain (e.g. mg.example.com)
 #   MINIGUN_HMAC_SECRET    — secret used to sign unsubscribe/manage tokens
 #   MINIGUN_INTERNAL_SECRET — secret used to authorize the self-call POST /internal/send/{id}/step
 #   MINIGUN_API_TOKEN      — optional; when set, bearer token required on all routes except /healthz, /u/, /manage/

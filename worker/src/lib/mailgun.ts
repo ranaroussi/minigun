@@ -1,6 +1,7 @@
 import { Env, mailgunApiBase } from '../env';
 
 export type Message = {
+  domain: string;
   from: string;
   to: string[];
   subject: string;
@@ -40,18 +41,8 @@ function basicAuth(apiKey: string): string {
   return 'Basic ' + btoa('api:' + apiKey);
 }
 
-function sendingDomain(env: Env, from: string): string {
-  if (env.MAILGUN_DOMAIN) return env.MAILGUN_DOMAIN;
-  const match = from.match(/<?([^\s<>@]+@([^\s<>]+))>?\s*$/);
-  if (!match || !match[2]) {
-    throw new Error(
-      `MAILGUN_DOMAIN is unset and cannot derive sending domain from From header "${from}"`,
-    );
-  }
-  return match[2];
-}
-
 export async function sendMessage(env: Env, m: Message): Promise<SendResponse> {
+  if (!m.domain) throw new Error('mailgun: message.domain is required');
   const form = new FormData();
   form.append('from', m.from);
   for (const to of m.to) form.append('to', to);
@@ -73,7 +64,7 @@ export async function sendMessage(env: Env, m: Message): Promise<SendResponse> {
     for (const [k, v] of Object.entries(m.customVars)) form.append('v:' + k, v);
   }
 
-  const endpoint = `${mailgunApiBase(env)}/v3/${sendingDomain(env, m.from)}/messages`;
+  const endpoint = `${mailgunApiBase(env)}/v3/${m.domain}/messages`;
   const resp = await fetch(endpoint, {
     method: 'POST',
     headers: { Authorization: basicAuth(env.MAILGUN_API_KEY) },

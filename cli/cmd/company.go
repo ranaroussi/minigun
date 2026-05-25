@@ -7,8 +7,9 @@ import (
 )
 
 var (
-	companyName string
-	companySlug string
+	companyName   string
+	companySlug   string
+	companyDomain string
 )
 
 var companyCmd = &cobra.Command{
@@ -21,8 +22,9 @@ var companyCreateCmd = &cobra.Command{
 	Short: "Create a company",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		body := map[string]string{
-			"name": companyName,
-			"slug": companySlug,
+			"name":   companyName,
+			"slug":   companySlug,
+			"domain": companyDomain,
 		}
 		resp, err := newClient().Post("/companies", body)
 		if err != nil {
@@ -63,8 +65,10 @@ var companyListsCmd = &cobra.Command{
 func init() {
 	companyCreateCmd.Flags().StringVar(&companyName, "name", "", "Human-readable company name")
 	companyCreateCmd.Flags().StringVar(&companySlug, "slug", "", "URL-safe slug (lowercase, hyphens)")
+	companyCreateCmd.Flags().StringVar(&companyDomain, "domain", "", "Mailgun sending domain for this company (e.g. mail.acme.com)")
 	_ = companyCreateCmd.MarkFlagRequired("name")
 	_ = companyCreateCmd.MarkFlagRequired("slug")
+	_ = companyCreateCmd.MarkFlagRequired("domain")
 
 	companyCmd.AddCommand(companyCreateCmd)
 	companyCmd.AddCommand(companyListCmd)

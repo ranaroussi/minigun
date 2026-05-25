@@ -3,22 +3,24 @@ package models
 import "time"
 
 type Company struct {
-	ID        string    `json:"id"`
-	Slug      string    `json:"slug"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Slug          string    `json:"slug"`
+	Name          string    `json:"name"`
+	SendingDomain string    `json:"sending_domain"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type List struct {
-	ID          string    `json:"id"`
-	Slug        string    `json:"slug"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Weight      int       `json:"weight"`
-	CompanyID   string    `json:"company_id"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Slug          string    `json:"slug"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	Weight        int       `json:"weight"`
+	CompanyID     string    `json:"company_id"`
+	SendingDomain string    `json:"sending_domain"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type Contact struct {
@@ -76,6 +78,7 @@ type Send struct {
 	BodyMD                 *string         `json:"body_md,omitempty"`
 	BodyHTML               *string         `json:"body_html,omitempty"`
 	BodyText               *string         `json:"body_text,omitempty"`
+	SendingDomain          string          `json:"sending_domain"`
 	Status                 SendStatus      `json:"status"`
 	BatchSize              int             `json:"batch_size"`
 	ThrottleMS             int             `json:"throttle_ms"`

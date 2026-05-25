@@ -25,6 +25,7 @@ export type Company = {
   id: string;
   slug: string;
   name: string;
+  sending_domain: string;
   created_at: string;
   updated_at: string;
 };
@@ -38,6 +39,7 @@ export type List = {
   description: string;
   weight: number;
   company_id: string;
+  sending_domain: string;
   created_at: string;
   updated_at: string;
 };
@@ -94,6 +96,7 @@ export type Send = {
   body_md?: string | null;
   body_html?: string | null;
   body_text?: string | null;
+  sending_domain: string;
   status: SendStatus;
   batch_size: number;
   throttle_ms: number;

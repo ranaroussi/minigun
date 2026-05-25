@@ -55,7 +55,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	st := store.New(d)
-	mg := mailgun.New(cfg.MailgunAPIBase, cfg.MailgunDomain, cfg.MailgunAPIKey)
+	mg := mailgun.New(cfg.MailgunAPIBase, cfg.MailgunAPIKey)
 	ts := turnstile.New(cfg.TurnstileSecretKey)
 	wm := worker.NewManager(cfg, st, mg, log)
 	if err := wm.RecoverPending(ctx); err != nil {

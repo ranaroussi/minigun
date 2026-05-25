@@ -9,7 +9,6 @@ import (
 
 type Config struct {
 	MailgunAPIKey  string
-	MailgunDomain  string
 	MailgunRegion  string
 	MailgunAPIBase string
 
@@ -28,7 +27,6 @@ type Config struct {
 func FromEnv() (*Config, error) {
 	c := &Config{
 		MailgunAPIKey:      os.Getenv("MAILGUN_API_KEY"),
-		MailgunDomain:      os.Getenv("MAILGUN_DOMAIN"),
 		MailgunRegion:      envOr("MAILGUN_REGION", "us"),
 		MailgunAPIBase:     os.Getenv("MAILGUN_API_BASE"),
 		PublicURL:          strings.TrimRight(os.Getenv("MINIGUN_PUBLIC_URL"), "/"),

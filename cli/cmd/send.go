@@ -16,6 +16,7 @@ var (
 	bulkPreheader  string
 	bulkFrom       string
 	bulkReplyTo    string
+	bulkDomain     string
 	bulkMDFile     string
 	bulkHTMLFile   string
 	bulkTextFile   string
@@ -31,6 +32,8 @@ var (
 	singleSubject  string
 	singleFrom     string
 	singleReplyTo  string
+	singleCompany  string
+	singleDomain   string
 	singleMDFile   string
 	singleHTMLFile string
 	singleTextFile string
@@ -71,6 +74,9 @@ var sendBulkCmd = &cobra.Command{
 			"unsub_redir":  bulkUnsubRedir,
 			"unsub_url":    bulkUnsubURL,
 		}
+		if bulkDomain != "" {
+			body["domain"] = bulkDomain
+		}
 		resp, err := newClient().Post("/send/bulk", body)
 		if err != nil {
 			return err
@@ -93,9 +99,13 @@ var sendSingleCmd = &cobra.Command{
 			"subject":  singleSubject,
 			"from":     singleFrom,
 			"reply_to": singleReplyTo,
+			"company":  singleCompany,
 			"md":       md,
 			"html":     html,
 			"text":     text,
+		}
+		if singleDomain != "" {
+			body["domain"] = singleDomain
 		}
 		resp, err := newClient().Post("/send/single", body)
 		if err != nil {
@@ -226,6 +236,7 @@ func init() {
 	sendBulkCmd.Flags().StringVar(&bulkPreheader, "preheader", "", "Preheader text")
 	sendBulkCmd.Flags().StringVar(&bulkFrom, "from", "", `From header, e.g. "Ran <ran@example.com>"`)
 	sendBulkCmd.Flags().StringVar(&bulkReplyTo, "reply-to", "", "Reply-To address")
+	sendBulkCmd.Flags().StringVar(&bulkDomain, "domain", "", "Override sending domain for this send (uses list.sending_domain if omitted; resolved value is persisted on the send row)")
 	sendBulkCmd.Flags().StringVar(&bulkMDFile, "md", "", "Markdown body file")
 	sendBulkCmd.Flags().StringVar(&bulkHTMLFile, "html", "", "HTML body file (used if --md is not provided)")
 	sendBulkCmd.Flags().StringVar(&bulkTextFile, "text", "", "Plain-text body file (optional; auto-generated from --md/--html otherwise)")
@@ -244,12 +255,15 @@ func init() {
 	sendSingleCmd.Flags().StringVar(&singleSubject, "subject", "", "Email subject")
 	sendSingleCmd.Flags().StringVar(&singleFrom, "from", "", "From header")
 	sendSingleCmd.Flags().StringVar(&singleReplyTo, "reply-to", "", "Reply-To address")
+	sendSingleCmd.Flags().StringVar(&singleCompany, "company", "", "Company id or slug (resolves sending domain)")
+	sendSingleCmd.Flags().StringVar(&singleDomain, "domain", "", "Override sending domain for this send (uses company.sending_domain if omitted; resolved value is persisted on the send row)")
 	sendSingleCmd.Flags().StringVar(&singleMDFile, "md", "", "Markdown body file")
 	sendSingleCmd.Flags().StringVar(&singleHTMLFile, "html", "", "HTML body file")
 	sendSingleCmd.Flags().StringVar(&singleTextFile, "text", "", "Plain-text body file (optional)")
 	_ = sendSingleCmd.MarkFlagRequired("to")
 	_ = sendSingleCmd.MarkFlagRequired("subject")
 	_ = sendSingleCmd.MarkFlagRequired("from")
+	_ = sendSingleCmd.MarkFlagRequired("company")
 
 	sendResumeCmd.Flags().BoolVar(&resumeForce, "force", false, "Resume even when in-flight batches are present (may cause duplicate sends)")
 

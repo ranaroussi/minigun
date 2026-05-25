@@ -11,8 +11,9 @@ import (
 )
 
 type createCompanyReq struct {
-	Name string `json:"name"`
-	Slug string `json:"slug"`
+	Name   string `json:"name"`
+	Slug   string `json:"slug"`
+	Domain string `json:"domain"`
 }
 
 func (s *Server) handleCreateCompany(w http.ResponseWriter, r *http.Request) {
@@ -23,6 +24,7 @@ func (s *Server) handleCreateCompany(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Name = strings.TrimSpace(req.Name)
 	req.Slug = strings.ToLower(strings.TrimSpace(req.Slug))
+	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -31,7 +33,11 @@ func (s *Server) handleCreateCompany(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "slug must be lowercase alphanumerics or hyphens, 1-64 chars")
 		return
 	}
-	c, err := s.store.CreateCompany(r.Context(), req.Slug, req.Name)
+	if req.Domain == "" {
+		writeError(w, http.StatusBadRequest, "domain is required (Mailgun sending domain for this company)")
+		return
+	}
+	c, err := s.store.CreateCompany(r.Context(), req.Slug, req.Name, req.Domain)
 	if err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "company with that slug already exists")

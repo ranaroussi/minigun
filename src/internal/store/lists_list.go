@@ -14,6 +14,7 @@ type ListSummary struct {
 	Description     string    `json:"description"`
 	Weight          int       `json:"weight"`
 	CompanyID       string    `json:"company_id"`
+	SendingDomain   string    `json:"sending_domain"`
 	SubscribedCount int       `json:"subscribed_count"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -28,7 +29,7 @@ type ListDetails struct {
 func (s *Store) ListLists(ctx context.Context) ([]ListSummary, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT l.id, l.slug, l.name, COALESCE(l.description, ''), COALESCE(l.weight, 10),
-		       COALESCE(l.company_id, ''), l.created_at, l.updated_at,
+		       COALESCE(l.company_id, ''), l.sending_domain, l.created_at, l.updated_at,
 		       COALESCE(SUM(CASE WHEN subs.subscribed = 1 THEN 1 ELSE 0 END), 0) AS subscribed_count
 		FROM lists l
 		LEFT JOIN subscriptions subs ON subs.list_id = l.id
@@ -44,7 +45,7 @@ func (s *Store) ListLists(ctx context.Context) ([]ListSummary, error) {
 	for rows.Next() {
 		var l ListSummary
 		var created, updated string
-		if err := rows.Scan(&l.ID, &l.Slug, &l.Name, &l.Description, &l.Weight, &l.CompanyID, &created, &updated, &l.SubscribedCount); err != nil {
+		if err := rows.Scan(&l.ID, &l.Slug, &l.Name, &l.Description, &l.Weight, &l.CompanyID, &l.SendingDomain, &created, &updated, &l.SubscribedCount); err != nil {
 			return nil, err
 		}
 		if l.CreatedAt, err = parseTime(created); err != nil {
@@ -61,7 +62,7 @@ func (s *Store) ListLists(ctx context.Context) ([]ListSummary, error) {
 func (s *Store) GetListDetails(ctx context.Context, listID string) (*ListDetails, error) {
 	row := s.DB.QueryRowContext(ctx, `
 		SELECT l.id, l.slug, l.name, COALESCE(l.description, ''), COALESCE(l.weight, 10),
-		       COALESCE(l.company_id, ''), l.created_at, l.updated_at,
+		       COALESCE(l.company_id, ''), l.sending_domain, l.created_at, l.updated_at,
 		       COALESCE(SUM(CASE WHEN subs.subscribed = 1 THEN 1 ELSE 0 END), 0) AS subscribed_count,
 		       COUNT(subs.id) AS total_count
 		FROM lists l
@@ -71,7 +72,7 @@ func (s *Store) GetListDetails(ctx context.Context, listID string) (*ListDetails
 	)
 	var d ListDetails
 	var created, updated string
-	if err := row.Scan(&d.ID, &d.Slug, &d.Name, &d.Description, &d.Weight, &d.CompanyID, &created, &updated, &d.SubscribedCount, &d.TotalCount); err != nil {
+	if err := row.Scan(&d.ID, &d.Slug, &d.Name, &d.Description, &d.Weight, &d.CompanyID, &d.SendingDomain, &created, &updated, &d.SubscribedCount, &d.TotalCount); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
