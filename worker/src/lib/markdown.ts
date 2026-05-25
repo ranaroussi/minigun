@@ -106,12 +106,20 @@ export function buildBody(
   const wrapper = wrapperHTML || DEFAULT_HTML_WRAPPER;
   const operatorHasUnsub = hasUnsubPlaceholder(markdownSrc);
 
-  const rendered = markdownToHTML(markdownSrc);
+  // Rewrite placeholders on the markdown source first so the markdown engine
+  // never sees the unrendered {{name | "default"}} form — otherwise the
+  // double-quotes inside the placeholder get HTML-escaped to &quot; during
+  // MD->HTML rendering and the post-render regex no longer matches.
+  const { rewritten: rewrittenMD, vars: mdVars } = rewriteVariables(markdownSrc);
+
+  const rendered = markdownToHTML(rewrittenMD);
   const htmlBody = operatorHasUnsub ? rendered : rendered + UNSUB_FOOTER_HTML;
   const wrapped = applyWrapper(wrapper, htmlBody, subject, preheader);
+  // Second pass picks up placeholders that come from the wrapper or the
+  // auto-injected unsub footer (e.g. {{unsubscribe}}), which never went
+  // through the first markdown pass.
   const { rewritten: rewrittenHTML, vars: htmlVars } = rewriteVariables(wrapped);
 
-  const { rewritten: rewrittenMD, vars: mdVars } = rewriteVariables(markdownSrc);
   let text = htmlToText(markdownToHTML(rewrittenMD));
   if (!operatorHasUnsub) {
     text += rewriteVariables(UNSUB_FOOTER_TEXT).rewritten;

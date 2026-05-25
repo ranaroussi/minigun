@@ -116,7 +116,12 @@ func EnsureUnsubFooterText(text string) string {
 func BuildBody(markdownSrc, wrapperHTML, subject, preheader string) (htmlOut, textOut string, vars []Variable, err error) {
 	operatorHasUnsub := HasUnsubPlaceholder(markdownSrc)
 
-	rendered, err := MarkdownToHTML(markdownSrc)
+	// Rewrite placeholders on the markdown source first; otherwise the
+	// markdown engine HTML-escapes the double-quotes inside
+	// {{name | "default"}} and the post-render regex no longer matches.
+	rewrittenMD, mdVars := RewriteVariables(markdownSrc)
+
+	rendered, err := MarkdownToHTML(rewrittenMD)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("markdown: %w", err)
 	}
@@ -127,8 +132,10 @@ func BuildBody(markdownSrc, wrapperHTML, subject, preheader string) (htmlOut, te
 		wrapperHTML = DefaultHTMLWrapper
 	}
 	wrapped := ApplyWrapper(wrapperHTML, rendered, subject, preheader)
+	// Second pass for placeholders introduced by the wrapper / auto-injected
+	// unsub footer (e.g. {{unsubscribe}}), which never went through the
+	// markdown source pass above.
 	rewrittenHTML, htmlVars := RewriteVariables(wrapped)
-	rewrittenMD, mdVars := RewriteVariables(markdownSrc)
 	textOut = HTMLToText(mustHTMLRenderFromMD(rewrittenMD))
 	if !operatorHasUnsub {
 		footerRewritten, _ := RewriteVariables(UnsubFooterText)

@@ -42,3 +42,24 @@ func TestHTMLToText(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// Locks in the order of rewriteVariables vs markdownToHTML: a placeholder
+// with a quoted default has to be rewritten before the markdown engine
+// HTML-escapes the inner double-quotes, otherwise the post-render regex
+// can't match `&quot;` and the placeholder ships verbatim.
+func TestBuildBodyQuotedDefaultThroughMarkdown(t *testing.T) {
+	md := "# Hi\n\nHow are you {{first_name | \"man\"}}?"
+	html, text, _, err := BuildBody(md, "", "Weekly", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, "%recipient.first_name%") {
+		t.Errorf("HTML body did not have first_name rewritten:\n%s", html)
+	}
+	if strings.Contains(html, "{{first_name") || strings.Contains(html, "&quot;man&quot;") {
+		t.Errorf("HTML body still contains an unrendered placeholder:\n%s", html)
+	}
+	if !strings.Contains(text, "%recipient.first_name%") {
+		t.Errorf("text body did not have first_name rewritten:\n%s", text)
+	}
+}
