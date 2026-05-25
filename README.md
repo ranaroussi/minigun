@@ -39,6 +39,8 @@ Mailgun is excellent at sending email. It is not opinionated about how you store
 - Crash-safe bulk sends. Each batch is checkpointed by a monotonic subscription id; if the process dies mid-send you resume from where you left off. Recipients added during a send don't get pulled in mid-flight.
 - Companies / brands group related lists so a recipient on the *Acme Newsletter* and *Acme Product Updates* lists sees a single combined preferences page.
 - Permanent per-send stats. Mailgun retains event logs for only 5 days; MiniGun pulls the Metrics API on a front-loaded schedule (+0, +1h, +6h, +24h, +48h, +5d after completion) and persists the aggregates locally.
+- Clean Gmail rendering on cross-domain `From` headers. MiniGun always sets `Sender: <From>` so Mailgun doesn't rewrite it to a VERP bounce address, which is what makes Gmail show `From: brand@example.com via mailgun-route.example.com` and hide the native one-click unsubscribe.
+- Dry-run sends. `minigun send bulk --testmode` (or `send single --testmode`) runs the full pipeline through to Mailgun with `o:testmode=yes`: the message is accepted and logged but not delivered. The flag is persisted on the send row, so cron-resumed chains keep it set for every subsequent batch.
 
 The philosophy:
 

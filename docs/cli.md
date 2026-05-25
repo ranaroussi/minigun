@@ -117,6 +117,15 @@ Optional unsubscribe-mode flags:
 --unsub-mode external --unsub-url  https://example.com/unsubscribe
 ```
 
+Add `--testmode` for a dry run. The API call is fully exercised (rendering, recipient resolution, tokens, Mailgun POST), Mailgun logs the message, and the send row tracks progress — but Mailgun does **not** actually deliver:
+
+```bash
+minigun send bulk --list newsletter --subject "Smoke test" \
+  --from "Ran <ran@example.com>" --md ./email.md --testmode
+```
+
+The flag is persisted on the send row, so if the chain dies mid-send and the cron sweep resumes it, every subsequent batch stays in test mode.
+
 ### `minigun send single`
 
 ```bash
@@ -128,7 +137,7 @@ minigun send single \
   --md ./hello.md
 ```
 
-Single transactional sends don't belong to a list, so `--company` is required: MiniGun resolves the sending domain from `company.sending_domain`. Pass `--domain` to override.
+Single transactional sends don't belong to a list, so `--company` is required: MiniGun resolves the sending domain from `company.sending_domain`. Pass `--domain` to override. `--testmode` works here too.
 
 ### `minigun send status <id>`
 

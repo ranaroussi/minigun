@@ -96,9 +96,9 @@ If you'd rather skip this step, comment out the `[triggers]` block in `wrangler.
 Each step is one HTTP request:
 
 ```
-POST /send/bulk → create Send row → kick first step (POST /send/:id/next)
-                                       │
-                                       ▼
+POST /send/bulk → create Send row → run batch #1 inline → schedule batch #2 in ctx.waitUntil
+                                                                  │
+                                                                  ▼
            ┌───────────────────────────────────────────────┐
            │  /send/:id/next handler                       │
            │    1. atomic batch claim (in_flight=true)     │
@@ -113,13 +113,15 @@ POST /send/bulk → create Send row → kick first step (POST /send/:id/next)
                                  (loop until done)
 ```
 
+The first batch runs inside the original `POST /send/bulk` request before responding `202`, so a single-batch send is always finished by the time the operator sees the response. Only batches `#2..N` ride the self-call chain. This eliminates a class of "send is stuck in `queued`" failures we used to see when the initial fire-and-forget self-fetch got dropped at the edge.
+
 `POST /send/:id/next` and `POST /send/:id/resume` are aliases — same handler. The first is the chain's natural verb, the second is the operator's. Both accept either the bearer `MINIGUN_API_TOKEN` or the internal `x-internal-secret` header.
 
 ### Cron watchdog (`* * * * *`)
 
 Every minute the worker:
 
-1. Looks for sends in `status='running'` with `updated_at < now() - 2min` and pokes them with `POST /send/:id/next`. The atomic batch claim makes a double-call safe.
+1. Looks for sends in `status IN ('queued', 'running')` with `updated_at < now() - 2min` and pokes them with `POST /send/:id/next`. The atomic batch claim makes a double-call safe. `queued` is included because a worker crash before batch #1 finishes can leave a brand-new send sitting at `queued` forever otherwise.
 2. Walks the `send_stats` table for any send whose `next_fetch_at` is due, pulls fresh per-send aggregates from Mailgun's Metrics API, and persists them. Mailgun retains event logs for only 5 days; this keeps stats permanent in your D1.
 
 ### Auto-injected unsubscribe footer
