@@ -13,12 +13,14 @@ import { scheduleNextStep, step } from '../send/bulk';
 import { runSingle } from '../send/single';
 import { sendProgress } from '../store/batches';
 import { resolveCompany } from '../store/companies';
+import { upsertContact } from '../store/contacts';
 import { resolveList } from '../store/lists';
 import { createSend, getSend, listSends } from '../store/sends';
 import { getSendStats } from '../store/stats';
 import {
   countSubscribed,
   maxSubscriptionID,
+  upsertSubscription,
 } from '../store/subscriptions';
 import { NotFoundError, UnsubscribeMode } from '../store/types';
 import { countUnsubscribesForSend } from '../store/unsubs';
@@ -168,6 +170,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       subject?: string;
       preheader?: string;
       company?: string;
+      list?: string;
       domain?: string;
       md?: string;
       html?: string;
@@ -201,22 +204,46 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       );
     }
 
+    // If the caller tied this transactional send to a list, upsert the
+    // recipient's contact + subscription so we can mint a real
+    // per-recipient unsubscribe token at send time. No list = no opt-out.
+    let listIDForSend: string | null = null;
+    let subscriptionID = 0;
+    if (body.list?.trim()) {
+      let resolvedList;
+      try {
+        resolvedList = await resolveList(c.env.DB, body.list.trim());
+      } catch (err) {
+        if (err instanceof NotFoundError) return c.json({ error: 'list not found' }, 404);
+        throw err;
+      }
+      listIDForSend = resolvedList.id;
+      const contact = await upsertContact(c.env.DB, body.to, undefined);
+      const sub = await upsertSubscription(c.env.DB, resolvedList.id, contact.id);
+      subscriptionID = sub.id;
+    }
+    const autoInjectUnsub = subscriptionID > 0;
+
     let bodyHTML: string;
     let bodyText: string;
     if (body.md) {
-      const built = buildBody(body.md, body.template ?? '', body.subject, body.preheader ?? '');
+      const built = buildBody(body.md, body.template ?? '', body.subject, body.preheader ?? '', autoInjectUnsub);
       bodyHTML = built.html;
       bodyText = built.text;
     } else {
-      const htmlWithFooter = ensureUnsubFooterHTML(body.html!);
-      const { rewritten } = rewriteVariables(htmlWithFooter);
-      bodyHTML = rewritten;
-      const baseText = body.text ?? htmlToText(body.html!);
-      bodyText = rewriteVariables(ensureUnsubFooterText(baseText)).rewritten;
+      let htmlSrc = body.html!;
+      let textSrc = body.text ?? htmlToText(body.html!);
+      if (autoInjectUnsub) {
+        htmlSrc = ensureUnsubFooterHTML(htmlSrc);
+        textSrc = ensureUnsubFooterText(textSrc);
+      }
+      bodyHTML = rewriteVariables(htmlSrc).rewritten;
+      bodyText = rewriteVariables(textSrc).rewritten;
     }
 
     const snd = await createSend(c.env.DB, {
       type: 'single',
+      list_id: listIDForSend,
       recipient_email: body.to,
       subject: body.subject,
       from_header: body.from,
@@ -228,6 +255,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       batch_size: 1,
       throttle_ms: 0,
       test_mode: body.test_mode === true,
+      last_subscription_id: subscriptionID,
     });
     c.executionCtx.waitUntil(runSingle(c.env, snd.id));
     return c.json({ send_id: snd.id, status: snd.status }, 202);

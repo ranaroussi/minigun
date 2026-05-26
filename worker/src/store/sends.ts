@@ -25,6 +25,10 @@ export type NewSendParams = {
   batch_size?: number;
   throttle_ms?: number;
   test_mode?: boolean;
+  // Bulk: cursor (highest subscription_id processed; starts 0). Single: the
+  // recipient's own subscription_id when caller passed a list, so runSingle
+  // can sign a per-recipient unsub token. 0 = no list, no opt-out link.
+  last_subscription_id?: number;
   max_subscription_id?: number | null;
   total_recipients?: number;
   unsubscribe_mode?: UnsubscribeMode;
@@ -48,7 +52,7 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
         last_subscription_id, max_subscription_id, total_recipients,
         unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
         notify_email, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -67,6 +71,7 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
       batchSize,
       throttleMs,
       p.test_mode ? 1 : 0,
+      p.last_subscription_id ?? 0,
       p.max_subscription_id ?? null,
       p.total_recipients ?? 0,
       mode,

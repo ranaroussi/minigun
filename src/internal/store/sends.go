@@ -25,6 +25,12 @@ type NewSendParams struct {
 	BatchSize              int
 	ThrottleMS             int
 	TestMode               bool
+	// LastSubscriptionID has two meanings depending on send type:
+	//   bulk:   cursor — the highest subscription_id already processed (starts at 0)
+	//   single: the recipient's own subscription_id when the caller passed a list,
+	//           so the send-time worker can sign a per-recipient unsubscribe token.
+	//           Zero means "no list was tied to this single send" → no auto-unsub link.
+	LastSubscriptionID     int64
 	MaxSubscriptionID      *int64
 	TotalRecipients        int
 	UnsubscribeMode        models.UnsubscribeMode
@@ -60,11 +66,11 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 			last_subscription_id, max_subscription_id, total_recipients,
 			unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
 			notify_email, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, p.Type, p.ListID, p.RecipientEmail, p.Subject, p.FromHeader, nullString(p.ReplyTo), nullString(p.TemplateName),
 		nullString(p.BodyMD), nullString(p.BodyHTML), nullString(p.BodyText), p.SendingDomain,
 		models.SendStatusQueued, p.BatchSize, p.ThrottleMS, p.TestMode,
-		p.MaxSubscriptionID, p.TotalRecipients,
+		p.LastSubscriptionID, p.MaxSubscriptionID, p.TotalRecipients,
 		p.UnsubscribeMode, nullString(p.UnsubscribeRedirectURL), nullString(p.UnsubscribeExternalURL),
 		nullString(p.NotifyEmail), now, now,
 	); err != nil {

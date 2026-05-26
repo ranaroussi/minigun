@@ -70,7 +70,7 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 
 	var bodyHTML, bodyText string
 	if req.MD != "" {
-		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, "", req.Subject, req.Preheader)
+		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, "", req.Subject, req.Preheader, true)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -149,6 +149,7 @@ type singleSendReq struct {
 	Subject   string `json:"subject"`
 	Preheader string `json:"preheader"`
 	Company   string `json:"company"`
+	List      string `json:"list"`
 	Domain    string `json:"domain"`
 	MD        string `json:"md"`
 	HTML      string `json:"html"`
@@ -193,39 +194,78 @@ func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the caller tied this transactional send to a list, upsert the
+	// recipient's contact + subscription so we can sign a real per-recipient
+	// unsubscribe token at send time. When no list is given the send is
+	// pure transactional with no opt-out — we skip auto-injecting an unsub
+	// footer below.
+	var (
+		listIDPtr   *string
+		subscriptionID int64
+	)
+	if strings.TrimSpace(req.List) != "" {
+		list, err := s.store.ResolveList(r.Context(), strings.TrimSpace(req.List))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "list not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		listIDPtr = &list.ID
+		contact, err := s.store.UpsertContact(r.Context(), req.To, nil)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		sub, err := s.store.UpsertSubscription(r.Context(), list.ID, contact.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		subscriptionID = sub.ID
+	}
+
 	var bodyHTML, bodyText string
 	if req.MD != "" {
-		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, req.Template, req.Subject, req.Preheader)
+		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, req.Template, req.Subject, req.Preheader, subscriptionID > 0)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	} else {
-		htmlWithFooter := render.EnsureUnsubFooterHTML(req.HTML)
-		rewritten, _ := render.RewriteVariables(htmlWithFooter)
-		bodyHTML = rewritten
-		baseText := req.Text
-		if baseText == "" {
-			baseText = render.HTMLToText(req.HTML)
+		htmlSrc := req.HTML
+		textSrc := req.Text
+		if textSrc == "" {
+			textSrc = render.HTMLToText(req.HTML)
 		}
-		rewrittenText, _ := render.RewriteVariables(render.EnsureUnsubFooterText(baseText))
+		if subscriptionID > 0 {
+			htmlSrc = render.EnsureUnsubFooterHTML(htmlSrc)
+			textSrc = render.EnsureUnsubFooterText(textSrc)
+		}
+		rewritten, _ := render.RewriteVariables(htmlSrc)
+		bodyHTML = rewritten
+		rewrittenText, _ := render.RewriteVariables(textSrc)
 		bodyText = rewrittenText
 	}
 
 	to := req.To
 	params := store.NewSendParams{
-		Type:           models.SendTypeSingle,
-		RecipientEmail: &to,
-		Subject:        req.Subject,
-		FromHeader:     req.From,
-		ReplyTo:        emptyToNil(req.ReplyTo),
-		BodyMD:         emptyToNil(req.MD),
-		BodyHTML:       &bodyHTML,
-		BodyText:       &bodyText,
-		SendingDomain:  sendingDomain,
-		BatchSize:      1,
-		ThrottleMS:     0,
-		TestMode:       req.TestMode,
+		Type:               models.SendTypeSingle,
+		ListID:             listIDPtr,
+		RecipientEmail:     &to,
+		Subject:            req.Subject,
+		FromHeader:         req.From,
+		ReplyTo:            emptyToNil(req.ReplyTo),
+		BodyMD:             emptyToNil(req.MD),
+		BodyHTML:           &bodyHTML,
+		BodyText:           &bodyText,
+		SendingDomain:      sendingDomain,
+		BatchSize:          1,
+		ThrottleMS:         0,
+		TestMode:           req.TestMode,
+		LastSubscriptionID: subscriptionID,
 	}
 	snd, err := s.store.CreateSend(r.Context(), params)
 	if err != nil {

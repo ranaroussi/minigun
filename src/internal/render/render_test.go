@@ -49,7 +49,7 @@ func TestHTMLToText(t *testing.T) {
 // can't match `&quot;` and the placeholder ships verbatim.
 func TestBuildBodyQuotedDefaultThroughMarkdown(t *testing.T) {
 	md := "# Hi\n\nHow are you {{first_name | \"man\"}}?"
-	html, text, _, err := BuildBody(md, "", "Weekly", "")
+	html, text, _, err := BuildBody(md, "", "Weekly", "", true)
 	if err != nil {
 		t.Fatal(err)
 	}

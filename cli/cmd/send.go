@@ -35,6 +35,7 @@ var (
 	singleFrom         string
 	singleReplyTo      string
 	singleCompany      string
+	singleList         string
 	singleDomain       string
 	singleMDFile       string
 	singleHTMLFile     string
@@ -114,6 +115,7 @@ var sendSingleCmd = &cobra.Command{
 			"from":      singleFrom,
 			"reply_to":  singleReplyTo,
 			"company":   singleCompany,
+			"list":      singleList,
 			"md":        md,
 			"html":      html,
 			"text":      text,
@@ -274,6 +276,7 @@ func init() {
 	sendSingleCmd.Flags().StringVar(&singleFrom, "from", "", "From header")
 	sendSingleCmd.Flags().StringVar(&singleReplyTo, "reply-to", "", "Reply-To address")
 	sendSingleCmd.Flags().StringVar(&singleCompany, "company", "", "Company id or slug (resolves sending domain)")
+	sendSingleCmd.Flags().StringVar(&singleList, "list", "", "Optional list id or slug. When set, MiniGun upserts the recipient's subscription, signs a per-recipient unsubscribe token, and adds List-Unsubscribe / List-Unsubscribe-Post headers (recommended for marketing / welcome / lifecycle mail). Omit for pure transactional mail (receipts, password resets) where there is no opt-out.")
 	sendSingleCmd.Flags().StringVar(&singleDomain, "domain", "", "Override sending domain for this send (uses company.sending_domain if omitted; resolved value is persisted on the send row)")
 	sendSingleCmd.Flags().StringVar(&singleMDFile, "md", "", "Markdown body file")
 	sendSingleCmd.Flags().StringVar(&singleHTMLFile, "html", "", "HTML body file")

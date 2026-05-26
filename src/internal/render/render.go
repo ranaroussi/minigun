@@ -121,31 +121,32 @@ func EnsureUnsubFooterText(text string) string {
 	return text + UnsubFooterText
 }
 
-func BuildBody(markdownSrc, wrapperHTML, subject, preheader string) (htmlOut, textOut string, vars []Variable, err error) {
+// BuildBody renders markdown + an optional wrapper template into the final
+// HTML and plain-text bodies. When autoInjectUnsub is true (bulk sends, or
+// single sends tied to a list) the unsub footer is appended unless the
+// operator already wrote {{unsubscribe}} / {{unsub_url}} into the markdown.
+// When false (pure transactional single sends with no list) the body ships
+// without any unsub link — there is no subscription to unsubscribe from.
+func BuildBody(markdownSrc, wrapperHTML, subject, preheader string, autoInjectUnsub bool) (htmlOut, textOut string, vars []Variable, err error) {
 	operatorHasUnsub := HasUnsubPlaceholder(markdownSrc)
+	addAutoFooter := autoInjectUnsub && !operatorHasUnsub
 
-	// Rewrite placeholders on the markdown source first; otherwise the
-	// markdown engine HTML-escapes the double-quotes inside
-	// {{name | "default"}} and the post-render regex no longer matches.
 	rewrittenMD, mdVars := RewriteVariables(markdownSrc)
 
 	rendered, err := MarkdownToHTML(rewrittenMD)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("markdown: %w", err)
 	}
-	if !operatorHasUnsub {
+	if addAutoFooter {
 		rendered += UnsubFooterHTML
 	}
 	if wrapperHTML == "" {
 		wrapperHTML = DefaultHTMLWrapper
 	}
 	wrapped := ApplyWrapper(wrapperHTML, rendered, subject, preheader)
-	// Second pass for placeholders introduced by the wrapper / auto-injected
-	// unsub footer (e.g. {{unsubscribe}}), which never went through the
-	// markdown source pass above.
 	rewrittenHTML, htmlVars := RewriteVariables(wrapped)
 	textOut = HTMLToText(mustHTMLRenderFromMD(rewrittenMD))
-	if !operatorHasUnsub {
+	if addAutoFooter {
 		footerRewritten, _ := RewriteVariables(UnsubFooterText)
 		textOut += footerRewritten
 	}

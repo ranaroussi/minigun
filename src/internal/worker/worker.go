@@ -122,18 +122,33 @@ func (m *Manager) runSingle(ctx context.Context, snd *models.Send) error {
 	if snd.SendingDomain == "" {
 		return m.failSend(ctx, snd.ID, "single send missing sending_domain")
 	}
+	html := derefStr(snd.BodyHTML)
+	text := derefStr(snd.BodyText)
+	var listUnsub, listUnsubPost string
+	if snd.LastSubscriptionID > 0 {
+		tok := token.Sign(m.cfg.HMACSecret, snd.ID, snd.LastSubscriptionID)
+		unsubURL := fmt.Sprintf("%s/u/%s", m.cfg.PublicURL, tok)
+		for _, ph := range []string{"%recipient.unsubscribe%", "%recipient.unsub_url%"} {
+			html = strings.ReplaceAll(html, ph, unsubURL)
+			text = strings.ReplaceAll(text, ph, unsubURL)
+		}
+		listUnsub = fmt.Sprintf("<%s>", unsubURL)
+		listUnsubPost = "List-Unsubscribe=One-Click"
+	}
 	msg := &mailgun.Message{
 		Domain:                snd.SendingDomain,
 		From:                  snd.FromHeader,
 		To:                    []string{*snd.RecipientEmail},
 		Subject:               snd.Subject,
-		HTML:                  derefStr(snd.BodyHTML),
-		Text:                  derefStr(snd.BodyText),
+		HTML:                  html,
+		Text:                  text,
 		Tag:                   snd.ID,
 		TrackingOpens:         true,
 		TrackingClicks:        true,
 		TrackingUnsubscribeOn: false,
 		TestMode:              snd.TestMode,
+		ListUnsubscribe:       listUnsub,
+		ListUnsubscribePost:   listUnsubPost,
 	}
 	if snd.ReplyTo != nil {
 		msg.ReplyTo = *snd.ReplyTo
