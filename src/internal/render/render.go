@@ -128,22 +128,27 @@ func EnsureUnsubFooterText(text string) string {
 // When false (pure transactional single sends with no list) the body ships
 // without any unsub link — there is no subscription to unsubscribe from.
 func BuildBody(markdownSrc, wrapperHTML, subject, preheader string, autoInjectUnsub bool) (htmlOut, textOut string, vars []Variable, err error) {
-	operatorHasUnsub := HasUnsubPlaceholder(markdownSrc)
-	addAutoFooter := autoInjectUnsub && !operatorHasUnsub
-
 	rewrittenMD, mdVars := RewriteVariables(markdownSrc)
 
 	rendered, err := MarkdownToHTML(rewrittenMD)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("markdown: %w", err)
 	}
-	if addAutoFooter {
-		rendered += UnsubFooterHTML
-	}
 	if wrapperHTML == "" {
 		wrapperHTML = DefaultHTMLWrapper
 	}
 	wrapped := ApplyWrapper(wrapperHTML, rendered, subject, preheader)
+
+	// Decide whether to auto-inject the unsub footer AFTER the wrapper has
+	// been merged with the body, so we can see whether the operator's
+	// template (or the markdown body) already provides an {{unsubscribe}}
+	// link. Without this we'd double-inject when a custom layout.html
+	// already includes its own opt-out.
+	addAutoFooter := autoInjectUnsub && !HasUnsubPlaceholder(wrapped)
+	if addAutoFooter {
+		wrapped = injectBeforeBodyClose(wrapped, UnsubFooterHTML)
+	}
+
 	rewrittenHTML, htmlVars := RewriteVariables(wrapped)
 	textOut = HTMLToText(mustHTMLRenderFromMD(rewrittenMD))
 	if addAutoFooter {
@@ -152,6 +157,15 @@ func BuildBody(markdownSrc, wrapperHTML, subject, preheader string, autoInjectUn
 	}
 	vars = mergeVars(htmlVars, mdVars)
 	return rewrittenHTML, textOut, vars, nil
+}
+
+var bodyCloseRE = regexp.MustCompile(`(?i)</body\s*>`)
+
+func injectBeforeBodyClose(html, fragment string) string {
+	if loc := bodyCloseRE.FindStringIndex(html); loc != nil {
+		return html[:loc[0]] + fragment + html[loc[0]:]
+	}
+	return html + fragment
 }
 
 func mustHTMLRenderFromMD(src string) string {

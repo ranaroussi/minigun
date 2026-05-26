@@ -105,6 +105,14 @@ export type BuiltBody = {
   vars: Variable[];
 };
 
+const BODY_CLOSE_RE = /<\/body\s*>/i;
+
+function injectBeforeBodyClose(html: string, fragment: string): string {
+  const m = BODY_CLOSE_RE.exec(html);
+  if (!m) return html + fragment;
+  return html.slice(0, m.index) + fragment + html.slice(m.index);
+}
+
 export function buildBody(
   markdownSrc: string,
   wrapperHTML: string,
@@ -113,14 +121,20 @@ export function buildBody(
   autoInjectUnsub: boolean = true,
 ): BuiltBody {
   const wrapper = wrapperHTML || DEFAULT_HTML_WRAPPER;
-  const operatorHasUnsub = hasUnsubPlaceholder(markdownSrc);
-  const addAutoFooter = autoInjectUnsub && !operatorHasUnsub;
 
   const { rewritten: rewrittenMD, vars: mdVars } = rewriteVariables(markdownSrc);
 
   const rendered = markdownToHTML(rewrittenMD);
-  const htmlBody = addAutoFooter ? rendered + UNSUB_FOOTER_HTML : rendered;
-  const wrapped = applyWrapper(wrapper, htmlBody, subject, preheader);
+  let wrapped = applyWrapper(wrapper, rendered, subject, preheader);
+
+  // Decide whether to auto-inject the unsub footer AFTER the wrapper has
+  // been merged with the body, so a custom template that already includes
+  // {{unsubscribe}} doesn't get a second footer tacked on.
+  const addAutoFooter = autoInjectUnsub && !hasUnsubPlaceholder(wrapped);
+  if (addAutoFooter) {
+    wrapped = injectBeforeBodyClose(wrapped, UNSUB_FOOTER_HTML);
+  }
+
   const { rewritten: rewrittenHTML, vars: htmlVars } = rewriteVariables(wrapped);
 
   let text = htmlToText(markdownToHTML(rewrittenMD));

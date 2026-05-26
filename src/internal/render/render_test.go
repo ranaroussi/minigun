@@ -92,6 +92,44 @@ func TestApplyWrapperAcceptsBothPlaceholderForms(t *testing.T) {
 	}
 }
 
+func TestBuildBodyTemplateUnsubSuppressesAutoFooter(t *testing.T) {
+	md := "Hello there."
+	tplWithUnsub := `<html><body>{{content}}<footer><a href="{{ unsubscribe }}">unsub</a></footer></body></html>`
+	html, text, _, err := BuildBody(md, tplWithUnsub, "Subj", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(html, "%recipient.unsubscribe%") != 1 {
+		t.Errorf("expected exactly one %%recipient.unsubscribe%% in html (template-supplied only), got:\n%s", html)
+	}
+	if strings.Contains(html, "Unsubscribe</a></p>") {
+		t.Errorf("auto-footer was injected even though template supplied {{unsubscribe}}:\n%s", html)
+	}
+	if strings.Contains(text, "Unsubscribe:") {
+		t.Errorf("auto-text-footer added when template supplied unsub:\n%s", text)
+	}
+}
+
+func TestBuildBodyTemplateWithoutUnsubGetsAutoFooter(t *testing.T) {
+	md := "Hello there."
+	tplNoUnsub := `<html><body>{{content}}</body></html>`
+	html, _, _, err := BuildBody(md, tplNoUnsub, "Subj", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, "Unsubscribe</a></p>") {
+		t.Errorf("expected auto-footer when neither md nor template had unsub:\n%s", html)
+	}
+	if !strings.Contains(html, "</body>") {
+		t.Errorf("auto-footer broke wrapper structure; missing </body>:\n%s", html)
+	}
+	bodyClose := strings.Index(html, "</body>")
+	footer := strings.Index(html, "Unsubscribe</a></p>")
+	if footer > bodyClose {
+		t.Errorf("auto-footer injected after </body> instead of before:\nfooter=%d bodyClose=%d\n%s", footer, bodyClose, html)
+	}
+}
+
 func TestApplyWrapperPreservesDollarSignsInContent(t *testing.T) {
 	wrapper := `<html><body>{{content}}</body></html>`
 	content := `<p>price: $100, code: $1 vs $2</p>`
