@@ -143,16 +143,18 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 }
 
 type singleSendReq struct {
-	To       string `json:"to"`
-	From     string `json:"from"`
-	ReplyTo  string `json:"reply_to"`
-	Subject  string `json:"subject"`
-	Company  string `json:"company"`
-	Domain   string `json:"domain"`
-	MD       string `json:"md"`
-	HTML     string `json:"html"`
-	Text     string `json:"text"`
-	TestMode bool   `json:"test_mode"`
+	To        string `json:"to"`
+	From      string `json:"from"`
+	ReplyTo   string `json:"reply_to"`
+	Subject   string `json:"subject"`
+	Preheader string `json:"preheader"`
+	Company   string `json:"company"`
+	Domain    string `json:"domain"`
+	MD        string `json:"md"`
+	HTML      string `json:"html"`
+	Text      string `json:"text"`
+	Template  string `json:"template"`
+	TestMode  bool   `json:"test_mode"`
 }
 
 func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
@@ -193,7 +195,7 @@ func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
 
 	var bodyHTML, bodyText string
 	if req.MD != "" {
-		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, "", req.Subject, "")
+		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, req.Template, req.Subject, req.Preheader)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

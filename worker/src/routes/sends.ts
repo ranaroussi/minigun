@@ -166,11 +166,13 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       from?: string;
       reply_to?: string;
       subject?: string;
+      preheader?: string;
       company?: string;
       domain?: string;
       md?: string;
       html?: string;
       text?: string;
+      template?: string;
       test_mode?: boolean;
     }>().catch(() => null);
     if (!body) return c.json({ error: 'invalid JSON' }, 400);
@@ -202,7 +204,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
     let bodyHTML: string;
     let bodyText: string;
     if (body.md) {
-      const built = buildBody(body.md, '', body.subject, '');
+      const built = buildBody(body.md, body.template ?? '', body.subject, body.preheader ?? '');
       bodyHTML = built.html;
       bodyText = built.text;
     } else {

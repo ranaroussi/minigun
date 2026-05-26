@@ -29,16 +29,18 @@ var (
 	bulkUnsubURL   string
 	bulkTestMode   bool
 
-	singleTo       string
-	singleSubject  string
-	singleFrom     string
-	singleReplyTo  string
-	singleCompany  string
-	singleDomain   string
-	singleMDFile   string
-	singleHTMLFile string
-	singleTextFile string
-	singleTestMode bool
+	singleTo           string
+	singleSubject      string
+	singlePreheader    string
+	singleFrom         string
+	singleReplyTo      string
+	singleCompany      string
+	singleDomain       string
+	singleMDFile       string
+	singleHTMLFile     string
+	singleTextFile     string
+	singleTemplateFile string
+	singleTestMode     bool
 
 	resumeForce bool
 
@@ -97,15 +99,25 @@ var sendSingleCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		var template string
+		if singleTemplateFile != "" {
+			b, e := os.ReadFile(singleTemplateFile)
+			if e != nil {
+				return fmt.Errorf("read --template: %w", e)
+			}
+			template = string(b)
+		}
 		body := map[string]any{
 			"to":        singleTo,
 			"subject":   singleSubject,
+			"preheader": singlePreheader,
 			"from":      singleFrom,
 			"reply_to":  singleReplyTo,
 			"company":   singleCompany,
 			"md":        md,
 			"html":      html,
 			"text":      text,
+			"template":  template,
 			"test_mode": singleTestMode,
 		}
 		if singleDomain != "" {
@@ -258,6 +270,7 @@ func init() {
 
 	sendSingleCmd.Flags().StringVar(&singleTo, "to", "", "Recipient email")
 	sendSingleCmd.Flags().StringVar(&singleSubject, "subject", "", "Email subject")
+	sendSingleCmd.Flags().StringVar(&singlePreheader, "preheader", "", "Preheader text (hidden inbox-preview snippet)")
 	sendSingleCmd.Flags().StringVar(&singleFrom, "from", "", "From header")
 	sendSingleCmd.Flags().StringVar(&singleReplyTo, "reply-to", "", "Reply-To address")
 	sendSingleCmd.Flags().StringVar(&singleCompany, "company", "", "Company id or slug (resolves sending domain)")
@@ -265,6 +278,7 @@ func init() {
 	sendSingleCmd.Flags().StringVar(&singleMDFile, "md", "", "Markdown body file")
 	sendSingleCmd.Flags().StringVar(&singleHTMLFile, "html", "", "HTML body file")
 	sendSingleCmd.Flags().StringVar(&singleTextFile, "text", "", "Plain-text body file (optional)")
+	sendSingleCmd.Flags().StringVar(&singleTemplateFile, "template", "", "HTML wrapper template file ({{content}} is replaced with the rendered body)")
 	sendSingleCmd.Flags().BoolVar(&singleTestMode, "testmode", false, "Mailgun test mode: message is accepted and logged but not delivered. Useful for dry runs.")
 	_ = sendSingleCmd.MarkFlagRequired("to")
 	_ = sendSingleCmd.MarkFlagRequired("subject")

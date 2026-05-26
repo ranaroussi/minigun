@@ -191,13 +191,18 @@ func addUnsubscribeContact(s *mcpsdk.Server, c *client.Client) {
 }
 
 type sendSingleInput struct {
-	To      string `json:"to" jsonschema:"Recipient email"`
-	Subject string `json:"subject" jsonschema:"Email subject"`
-	From    string `json:"from" jsonschema:"RFC 5322 From header"`
-	ReplyTo string `json:"reply_to,omitempty"`
-	MD      string `json:"md,omitempty" jsonschema:"Markdown body. One of md or html is required."`
-	HTML    string `json:"html,omitempty" jsonschema:"HTML body. Used if md is not provided."`
-	Text    string `json:"text,omitempty" jsonschema:"Plain-text body. Auto-generated from md/html if omitted."`
+	To        string `json:"to" jsonschema:"Recipient email"`
+	Subject   string `json:"subject" jsonschema:"Email subject"`
+	Preheader string `json:"preheader,omitempty" jsonschema:"Short hidden snippet shown in the inbox preview line next to the subject"`
+	From      string `json:"from" jsonschema:"RFC 5322 From header"`
+	ReplyTo   string `json:"reply_to,omitempty"`
+	Company   string `json:"company" jsonschema:"Company id or slug. Resolves the sending domain."`
+	Domain    string `json:"domain,omitempty" jsonschema:"Override sending domain for this send"`
+	MD        string `json:"md,omitempty" jsonschema:"Markdown body. One of md or html is required."`
+	HTML      string `json:"html,omitempty" jsonschema:"HTML body. Used if md is not provided."`
+	Text      string `json:"text,omitempty" jsonschema:"Plain-text body. Auto-generated from md/html if omitted."`
+	Template  string `json:"template,omitempty" jsonschema:"HTML wrapper. {{content}} is replaced with the rendered body."`
+	TestMode  bool   `json:"test_mode,omitempty" jsonschema:"Mailgun test mode: accepted and logged but not delivered"`
 }
 
 func addSendSingle(s *mcpsdk.Server, c *client.Client) {
