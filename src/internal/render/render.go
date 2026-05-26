@@ -70,11 +70,19 @@ func RewriteVariables(body string) (rewritten string, vars []Variable) {
 	return rewritten, vars
 }
 
+var (
+	wrapperContentRE   = regexp.MustCompile(`\{\{\s*content\s*\}\}|<!--\s*content\s*-->`)
+	wrapperSubjectRE   = regexp.MustCompile(`\{\{\s*subject\s*\}\}|<!--\s*subject\s*-->`)
+	wrapperPreheaderRE = regexp.MustCompile(`\{\{\s*preheader\s*\}\}|<!--\s*preheader\s*-->`)
+)
+
 func ApplyWrapper(wrapper, content, subject, preheader string) string {
-	out := wrapper
-	out = strings.ReplaceAll(out, "{{content}}", content)
-	out = strings.ReplaceAll(out, "{{subject}}", html.EscapeString(subject))
-	out = strings.ReplaceAll(out, "{{preheader}}", html.EscapeString(preheader))
+	// ReplaceAllStringFunc to avoid `$` interpretation in the replacement.
+	sub := html.EscapeString(subject)
+	pre := html.EscapeString(preheader)
+	out := wrapperContentRE.ReplaceAllStringFunc(wrapper, func(_ string) string { return content })
+	out = wrapperSubjectRE.ReplaceAllStringFunc(out, func(_ string) string { return sub })
+	out = wrapperPreheaderRE.ReplaceAllStringFunc(out, func(_ string) string { return pre })
 	return out
 }
 

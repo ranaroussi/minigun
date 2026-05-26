@@ -84,11 +84,19 @@ export function ensureUnsubFooterText(text: string): string {
   return hasUnsubPlaceholder(text) ? text : text + UNSUB_FOOTER_TEXT;
 }
 
+const WRAPPER_CONTENT_RE   = /\{\{\s*content\s*\}\}|<!--\s*content\s*-->/g;
+const WRAPPER_SUBJECT_RE   = /\{\{\s*subject\s*\}\}|<!--\s*subject\s*-->/g;
+const WRAPPER_PREHEADER_RE = /\{\{\s*preheader\s*\}\}|<!--\s*preheader\s*-->/g;
+
 export function applyWrapper(wrapper: string, content: string, subject: string, preheader: string): string {
+  // Use function replacements so `$` characters inside content (e.g. money
+  // formatting, JS code snippets) aren't interpreted as capture-group refs.
+  const sub = escapeHTML(subject);
+  const pre = escapeHTML(preheader);
   return wrapper
-    .replaceAll('{{content}}', content)
-    .replaceAll('{{subject}}', escapeHTML(subject))
-    .replaceAll('{{preheader}}', escapeHTML(preheader));
+    .replace(WRAPPER_CONTENT_RE, () => content)
+    .replace(WRAPPER_SUBJECT_RE, () => sub)
+    .replace(WRAPPER_PREHEADER_RE, () => pre);
 }
 
 export type BuiltBody = {
