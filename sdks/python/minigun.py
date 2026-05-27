@@ -294,6 +294,52 @@ class Minigun:
             path += "?force=1"
         return self._post(path, {})
 
+    def list_send_events(
+        self,
+        send_id: str,
+        event: Optional[str] = None,
+        since_ms: Optional[int] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        """One page of archived Mailgun events for a send. Requires
+        EVENTS_ARCHIVE_ENABLED on the server.
+
+        Returns {"items": [...], "next_cursor"?: str}. When next_cursor
+        is absent, the page is the last one.
+
+        - event:    filter by event type (delivered/opened/clicked/...)
+        - since_ms: lower bound on event_timestamp_ms
+        - limit:    page size (default 100, max 500)
+        - cursor:   opaque keyset cursor from a previous page's next_cursor
+        """
+        params = []
+        if event:
+            params.append(f"event={_q(event)}")
+        if since_ms and since_ms > 0:
+            params.append(f"since={since_ms}")
+        if limit and limit > 0:
+            params.append(f"limit={limit}")
+        if cursor:
+            params.append(f"cursor={_q(cursor)}")
+        path = f"/send/{_q(send_id)}/events"
+        if params:
+            path += "?" + "&".join(params)
+        return self._get(path)
+
+    def get_contact_engagement(
+        self,
+        id_or_email: str,
+        list_id: Optional[str] = None,
+    ) -> dict:
+        """Per-list engagement counters for one contact. id_or_email
+        accepts a contact id (c_*) or email. Pass list_id to narrow
+        to one list (accepts id or slug)."""
+        path = f"/contacts/{_q(id_or_email)}/engagement"
+        if list_id:
+            path += f"?list_id={_q(list_id)}"
+        return self._get(path)
+
     # -----------------------------------------------------------------
     # Transport
     # -----------------------------------------------------------------

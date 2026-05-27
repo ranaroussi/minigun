@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -417,6 +418,181 @@ func (s *Store) ApplyEventToEngagement(ctx context.Context, contactID, listID, e
 	default:
 		return nil
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Read endpoints (Phase 3)
+// ---------------------------------------------------------------------------
+
+// ListSendEventsParams narrows what ListSendEvents returns.
+// AfterTsMs + AfterID together form the keyset cursor — the next page
+// starts strictly after (AfterTsMs, AfterID). Limit is clamped by the
+// caller (see api/events.go).
+type ListSendEventsParams struct {
+	SendID    string
+	EventType string // "" = all; otherwise filters mailgun_events.event
+	SinceMs   int64  // 0 = no lower bound
+	AfterTsMs int64  // 0 = first page
+	AfterID   string // "" = first page
+	Limit     int
+}
+
+// ListSendEvents returns one page of events for a send, ordered ASC by
+// (event_timestamp_ms, id). The ASC order keeps the analytical-replay
+// use case natural: "show me how this send unfolded." The keyset cursor
+// is stable across inserts because mailgun_event_id (and hence id) is
+// monotonic per (send, ms) — newly arrived late events for older windows
+// would fall before the current cursor and the client wouldn't see them
+// on subsequent pages. That's acceptable for the archive's purpose
+// (forensic replay); for "find late-arriving opens" use SinceMs instead.
+func (s *Store) ListSendEvents(ctx context.Context, p ListSendEventsParams) ([]MailgunEvent, error) {
+	limit := p.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	// Build the WHERE clause dynamically — keeping the parameterized
+	// form close to the SQL so future maintainers can read both at once.
+	clauses := []string{"mg_send_id = ?"}
+	args := []any{p.SendID}
+	if p.EventType != "" {
+		clauses = append(clauses, "event = ?")
+		args = append(args, p.EventType)
+	}
+	if p.SinceMs > 0 {
+		clauses = append(clauses, "event_timestamp_ms >= ?")
+		args = append(args, p.SinceMs)
+	}
+	if p.AfterTsMs > 0 || p.AfterID != "" {
+		// Keyset pagination on (event_timestamp_ms, id). The OR form is
+		// the canonical cursor predicate for compound-key ordering; SQLite
+		// can evaluate it efficiently when the underlying index covers
+		// (mg_send_id, event_timestamp_ms).
+		clauses = append(clauses, "(event_timestamp_ms > ? OR (event_timestamp_ms = ? AND id > ?))")
+		args = append(args, p.AfterTsMs, p.AfterTsMs, p.AfterID)
+	}
+	args = append(args, limit)
+	query := `
+		SELECT id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
+		       event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
+		       url, reason, tags, client_info, geolocation, user_variables, raw_payload, created_at
+		FROM mailgun_events
+		WHERE ` + strings.Join(clauses, " AND ") + `
+		ORDER BY event_timestamp_ms ASC, id ASC
+		LIMIT ?`
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MailgunEvent
+	for rows.Next() {
+		var ev MailgunEvent
+		var severity, messageID, contactID, url, reason, tags, clientInfo, geo, userVars sql.NullString
+		var createdAt string
+		if err := rows.Scan(
+			&ev.ID, &ev.Domain, &ev.MailgunEventID, &ev.Event, &severity,
+			&ev.Recipient, &ev.RecipientDomain,
+			&ev.EventTimestampMs, &ev.EventTimestampISO,
+			&messageID, &ev.MgSendID, &contactID,
+			&url, &reason, &tags, &clientInfo, &geo, &userVars,
+			&ev.RawPayload, &createdAt,
+		); err != nil {
+			return nil, err
+		}
+		ev.Severity = stringPtr(severity)
+		ev.MessageID = stringPtr(messageID)
+		ev.ContactID = stringPtr(contactID)
+		ev.URL = stringPtr(url)
+		ev.Reason = stringPtr(reason)
+		ev.Tags = stringPtr(tags)
+		ev.ClientInfo = stringPtr(clientInfo)
+		ev.Geolocation = stringPtr(geo)
+		ev.UserVariables = stringPtr(userVars)
+		if ev.CreatedAt, err = parseTime(createdAt); err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+// ListContactEngagement returns engagement rows for one contact.
+// When listID is non-empty, narrows to one (contact, list); otherwise
+// returns one row per list the contact has engaged with.
+//
+// The contactID can be either a contact_id (c_*) or an email — the
+// caller is expected to have resolved it via ResolveContact upstream.
+func (s *Store) ListContactEngagement(ctx context.Context, contactID, listID string) ([]ContactEngagement, error) {
+	clauses := []string{"contact_id = ?"}
+	args := []any{contactID}
+	if listID != "" {
+		clauses = append(clauses, "list_id = ?")
+		args = append(args, listID)
+	}
+	query := `
+		SELECT contact_id, list_id,
+		       last_delivered_at_ms, last_open_at_ms, last_click_at_ms, last_engagement_at_ms,
+		       total_delivered, total_opens, total_clicks,
+		       messages_since_last_engagement, updated_at
+		FROM contact_engagement
+		WHERE ` + strings.Join(clauses, " AND ") + `
+		ORDER BY (last_engagement_at_ms IS NULL) ASC, last_engagement_at_ms DESC,
+		         (last_delivered_at_ms IS NULL) ASC, last_delivered_at_ms DESC`
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ContactEngagement
+	for rows.Next() {
+		var ce ContactEngagement
+		var updatedAt string
+		if err := rows.Scan(
+			&ce.ContactID, &ce.ListID,
+			&ce.LastDeliveredAtMs, &ce.LastOpenAtMs, &ce.LastClickAtMs, &ce.LastEngagementAtMs,
+			&ce.TotalDelivered, &ce.TotalOpens, &ce.TotalClicks,
+			&ce.MessagesSinceLastEngagement, &updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if ce.UpdatedAt, err = parseTime(updatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, ce)
+	}
+	return out, rows.Err()
+}
+
+// ResolveContactID accepts either a contact_id (c_*) or an email and
+// returns the canonical contact_id. Returns ErrNotFound when no contact
+// matches.
+func (s *Store) ResolveContactID(ctx context.Context, idOrEmail string) (string, error) {
+	key := strings.TrimSpace(idOrEmail)
+	if key == "" {
+		return "", ErrNotFound
+	}
+	// contact_id prefix is "c_" (see ids/ids.go). Cheap heuristic so we
+	// don't run two queries against contacts.
+	if strings.HasPrefix(key, "c_") {
+		var id string
+		err := s.DB.QueryRowContext(ctx, `SELECT id FROM contacts WHERE id = ?`, key).Scan(&id)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return "", ErrNotFound
+			}
+			return "", err
+		}
+		return id, nil
+	}
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM contacts WHERE email = ?`, strings.ToLower(key)).Scan(&id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	return id, nil
 }
 
 // optString turns "" into sql.NullString{Valid:false} and "foo" into

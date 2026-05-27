@@ -9,7 +9,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var contactParamsJSON string
+var (
+	contactParamsJSON      string
+	contactEngagementList  string
+)
 
 var contactCmd = &cobra.Command{
 	Use:   "contact",
@@ -81,8 +84,34 @@ Accepts either a contact id (c_XXXXXXXXXX) or a lowercase email.`,
 	},
 }
 
+var contactEngagementCmd = &cobra.Command{
+	Use:   "engagement <id-or-email>",
+	Short: "Show per-list engagement summary for a contact (delivered/opens/clicks, last-engaged-at, dormancy)",
+	Long: `Returns per-(contact, list) engagement counters from the contact_engagement
+summary table maintained by the events-archive pull.
+
+Accepts a contact id (c_XXXXXXXXXX) or a lowercase email.
+
+Use --list to narrow to one list. Useful for diagnosing why a contact
+would or wouldn't be pruned by the Phase 4 hygiene tools.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path := fmt.Sprintf("/contacts/%s/engagement", url.PathEscape(args[0]))
+		if contactEngagementList != "" {
+			path += "?list_id=" + url.QueryEscape(contactEngagementList)
+		}
+		resp, err := newClient().Get(path)
+		if err != nil {
+			return err
+		}
+		printJSON(resp.Body)
+		return resp.Error()
+	},
+}
+
 func init() {
 	contactAddCmd.Flags().StringVar(&contactParamsJSON, "params", "", `JSON object of contact parameters, e.g. '{"first_name":"Ran"}'`)
-	contactCmd.AddCommand(contactAddCmd, contactUnsubscribeCmd, contactDeleteCmd)
+	contactEngagementCmd.Flags().StringVar(&contactEngagementList, "list", "", "Optional list id or slug to narrow to one list")
+	contactCmd.AddCommand(contactAddCmd, contactUnsubscribeCmd, contactDeleteCmd, contactEngagementCmd)
 	rootCmd.AddCommand(contactCmd)
 }

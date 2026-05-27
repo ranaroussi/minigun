@@ -312,6 +312,42 @@ class Minigun
         return $this->post($path, []);
     }
 
+    /**
+     * One page of archived Mailgun events for a send. Requires
+     * EVENTS_ARCHIVE_ENABLED on the server.
+     *
+     * Returns ['items' => [...], 'next_cursor' => ?string]. When
+     * next_cursor is absent / empty, the page is the last one.
+     *
+     * @param array{event?: string, since_ms?: int, limit?: int, cursor?: string} $opts
+     */
+    public function listSendEvents(string $sendId, array $opts = []): array
+    {
+        $params = [];
+        if (!empty($opts['event']))    $params['event']  = $opts['event'];
+        if (!empty($opts['since_ms'])) $params['since']  = (string) $opts['since_ms'];
+        if (!empty($opts['limit']))    $params['limit']  = (string) $opts['limit'];
+        if (!empty($opts['cursor']))   $params['cursor'] = $opts['cursor'];
+        $path = '/send/' . rawurlencode($sendId) . '/events';
+        if ($params) {
+            $path .= '?' . http_build_query($params);
+        }
+        return $this->get($path);
+    }
+
+    /**
+     * Per-list engagement counters for one contact. $idOrEmail accepts
+     * a contact id (c_*) or email. $listId narrows to one list (id or slug).
+     */
+    public function getContactEngagement(string $idOrEmail, ?string $listId = null): array
+    {
+        $path = '/contacts/' . rawurlencode($idOrEmail) . '/engagement';
+        if ($listId) {
+            $path .= '?list_id=' . rawurlencode($listId);
+        }
+        return $this->get($path);
+    }
+
     // ---------------------------------------------------------------
     // Transport
     // ---------------------------------------------------------------

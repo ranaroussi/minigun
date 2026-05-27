@@ -1,3 +1,5 @@
+-- +goose Up
+-- +goose StatementBegin
 -- ============================================================================
 -- 00007_events_archive
 -- ============================================================================
@@ -113,3 +115,4 @@ ALTER TABLE sends ADD COLUMN events_last_pull_error        TEXT;
 CREATE INDEX idx_sends_event_pull_due
   ON sends(events_last_pulled_at_ms)
   WHERE events_archive_complete = 0 AND test_mode = 0;
+-- +goose StatementEnd

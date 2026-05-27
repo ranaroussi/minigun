@@ -78,6 +78,9 @@ func (s *Server) routes() chi.Router {
 	r.Post("/send/{id}/next", s.handleResumeSend)
 	r.Get("/send/{id}", s.handleGetSend)
 	r.Get("/send/{id}/stats", s.handleSendStats)
+	r.Get("/send/{id}/events", s.handleListSendEvents)
+
+	r.Get("/contacts/{idOrEmail}/engagement", s.handleGetContactEngagement)
 
 	r.Get("/u/{token}", s.handleUnsubscribeGet)
 	r.Post("/u/{token}", s.handleUnsubscribePost)

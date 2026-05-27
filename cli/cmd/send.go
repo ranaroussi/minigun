@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"time"
 
@@ -212,6 +213,96 @@ var sendStatsCmd = &cobra.Command{
 	},
 }
 
+var (
+	eventsFilter string
+	eventsSince  int64
+	eventsLimit  int
+	eventsCursor string
+	eventsAll    bool
+)
+
+var sendEventsCmd = &cobra.Command{
+	Use:   "events <send_id>",
+	Short: "List archived Mailgun events for a send (delivered/opened/clicked/failed/complained/unsubscribed)",
+	Long: `Returns the per-event archive for a send: every delivered/opened/clicked/
+failed/complained/unsubscribed event MiniGun has pulled from Mailgun.
+
+Pagination uses an opaque keyset cursor over (event_timestamp_ms, id).
+Pass --cursor with the value returned in next_cursor to get the next page,
+or use --all to follow pagination automatically until exhausted.
+
+Requires EVENTS_ARCHIVE_ENABLED on the server side. If no events show up,
+either the feature flag is off, the send is older than the 30-day archive
+window, or the archive cron hasn't run yet.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sendID := args[0]
+		cli := newClient()
+		cursor := eventsCursor
+		first := true
+		for {
+			q := url.Values{}
+			if eventsFilter != "" {
+				q.Set("event", eventsFilter)
+			}
+			if eventsSince > 0 {
+				q.Set("since", fmt.Sprintf("%d", eventsSince))
+			}
+			if eventsLimit > 0 {
+				q.Set("limit", fmt.Sprintf("%d", eventsLimit))
+			}
+			if cursor != "" {
+				q.Set("cursor", cursor)
+			}
+			path := fmt.Sprintf("/send/%s/events", sendID)
+			if enc := q.Encode(); enc != "" {
+				path += "?" + enc
+			}
+			resp, err := cli.Get(path)
+			if err != nil {
+				return err
+			}
+			if !resp.OK() {
+				printJSON(resp.Body)
+				return resp.Error()
+			}
+			if !eventsAll {
+				printJSON(resp.Body)
+				return nil
+			}
+			// --all mode: print the items and follow next_cursor until empty.
+			var page struct {
+				Items      []json.RawMessage `json:"items"`
+				NextCursor string            `json:"next_cursor"`
+			}
+			if err := json.Unmarshal(resp.Body, &page); err != nil {
+				return err
+			}
+			if first {
+				fmt.Println("[")
+				first = false
+			}
+			for i, item := range page.Items {
+				if i > 0 {
+					fmt.Println(",")
+				}
+				fmt.Print("  ", string(item))
+			}
+			if page.NextCursor == "" {
+				if len(page.Items) > 0 {
+					fmt.Println()
+				}
+				fmt.Println("]")
+				return nil
+			}
+			if len(page.Items) > 0 {
+				fmt.Println(",")
+			}
+			cursor = page.NextCursor
+		}
+	},
+}
+
 func terminal(status string) bool {
 	switch status {
 	case "completed", "failed", "cancelled":
@@ -293,6 +384,12 @@ func init() {
 	sendStatusCmd.Flags().BoolVarP(&statusWatch, "watch", "w", false, "Poll status until the send reaches a terminal state")
 	sendStatusCmd.Flags().DurationVar(&statusInterval, "interval", 2*time.Second, "Polling interval when --watch is set")
 
-	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendStatusCmd, sendStatsCmd)
+	sendEventsCmd.Flags().StringVar(&eventsFilter, "event", "", "Filter by event type (delivered, opened, clicked, failed, complained, unsubscribed)")
+	sendEventsCmd.Flags().Int64Var(&eventsSince, "since", 0, "Lower bound on event_timestamp_ms (Unix epoch milliseconds)")
+	sendEventsCmd.Flags().IntVar(&eventsLimit, "limit", 100, "Page size (default 100, max 500)")
+	sendEventsCmd.Flags().StringVar(&eventsCursor, "cursor", "", "Opaque pagination cursor from a previous page's next_cursor")
+	sendEventsCmd.Flags().BoolVar(&eventsAll, "all", false, "Follow next_cursor and emit all events as one JSON array")
+
+	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendStatusCmd, sendStatsCmd, sendEventsCmd)
 	rootCmd.AddCommand(sendCmd)
 }

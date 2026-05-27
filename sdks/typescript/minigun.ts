@@ -260,6 +260,36 @@ export class Minigun {
     return this.post(path, {});
   }
 
+  /** One page of archived Mailgun events for a send (requires
+   * EVENTS_ARCHIVE_ENABLED on the server). Response shape:
+   * { items: [...], next_cursor?: string }. When next_cursor is
+   * absent, the page is the last one. */
+  listSendEvents(
+    sendId: string,
+    opts: {
+      event?: string;
+      sinceMs?: number;
+      limit?: number;
+      cursor?: string;
+    } = {},
+  ): Promise<unknown> {
+    const q = new URLSearchParams();
+    if (opts.event) q.set('event', opts.event);
+    if (opts.sinceMs && opts.sinceMs > 0) q.set('since', String(opts.sinceMs));
+    if (opts.limit && opts.limit > 0) q.set('limit', String(opts.limit));
+    if (opts.cursor) q.set('cursor', opts.cursor);
+    const qs = q.toString();
+    return this.get(`/send/${enc(sendId)}/events${qs ? '?' + qs : ''}`);
+  }
+
+  /** Per-list engagement counters for one contact. idOrEmail accepts
+   * a contact id (c_*) or email. Pass listId to narrow to one list
+   * (accepts id or slug). */
+  getContactEngagement(idOrEmail: string, listId?: string): Promise<unknown> {
+    const path = `/contacts/${enc(idOrEmail)}/engagement`;
+    return this.get(listId ? `${path}?list_id=${encodeURIComponent(listId)}` : path);
+  }
+
   // ------------------------------------------------------------------
   // Transport
   // ------------------------------------------------------------------

@@ -369,3 +369,118 @@ export async function getSendListID(db: D1Database, sendID: string): Promise<str
     .first<{ list_id: string | null }>();
   return row?.list_id ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Read endpoints (Phase 3)
+// ---------------------------------------------------------------------------
+
+export type ListSendEventsParams = {
+  sendID: string;
+  eventType?: string;
+  sinceMs?: number;
+  afterTsMs?: number;
+  afterID?: string;
+  limit?: number;
+};
+
+// listSendEvents returns one page of archived events for a send,
+// ordered ASC by (event_timestamp_ms, id). Keyset cursor over (ts, id)
+// keeps pagination stable across late-arriving events (they fall before
+// the cursor and won't show up on subsequent pages; that's a deliberate
+// trade-off — for "find late-arriving opens" use sinceMs to refetch).
+export async function listSendEvents(
+  db: D1Database,
+  p: ListSendEventsParams,
+): Promise<MailgunEvent[]> {
+  const limit = Math.max(1, Math.min(p.limit ?? 100, 500));
+  const clauses: string[] = ['mg_send_id = ?'];
+  const args: unknown[] = [p.sendID];
+  if (p.eventType) {
+    clauses.push('event = ?');
+    args.push(p.eventType);
+  }
+  if (p.sinceMs && p.sinceMs > 0) {
+    clauses.push('event_timestamp_ms >= ?');
+    args.push(p.sinceMs);
+  }
+  if ((p.afterTsMs && p.afterTsMs > 0) || p.afterID) {
+    clauses.push('(event_timestamp_ms > ? OR (event_timestamp_ms = ? AND id > ?))');
+    args.push(p.afterTsMs ?? 0, p.afterTsMs ?? 0, p.afterID ?? '');
+  }
+  args.push(limit);
+  const sql = `
+    SELECT id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
+           event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
+           url, reason, tags, client_info, geolocation, user_variables, raw_payload, created_at
+    FROM mailgun_events
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY event_timestamp_ms ASC, id ASC
+    LIMIT ?`;
+  const { results } = await db.prepare(sql).bind(...args).all<MailgunEvent>();
+  return results ?? [];
+}
+
+// ContactEngagement mirrors a row of contact_engagement, normalized for
+// JSON wire output (nullable big-ints stay as number|null).
+export type ContactEngagement = {
+  contact_id: string;
+  list_id: string;
+  last_delivered_at_ms: number | null;
+  last_open_at_ms: number | null;
+  last_click_at_ms: number | null;
+  last_engagement_at_ms: number | null;
+  total_delivered: number;
+  total_opens: number;
+  total_clicks: number;
+  messages_since_last_engagement: number;
+  updated_at: string;
+};
+
+// listContactEngagement returns per-list engagement rows for one contact.
+// listID="" returns one row per list the contact has engaged with;
+// otherwise narrows to the (contact, list) singleton.
+export async function listContactEngagement(
+  db: D1Database,
+  contactID: string,
+  listID: string,
+): Promise<ContactEngagement[]> {
+  const clauses: string[] = ['contact_id = ?'];
+  const args: unknown[] = [contactID];
+  if (listID) {
+    clauses.push('list_id = ?');
+    args.push(listID);
+  }
+  const sql = `
+    SELECT contact_id, list_id,
+           last_delivered_at_ms, last_open_at_ms, last_click_at_ms, last_engagement_at_ms,
+           total_delivered, total_opens, total_clicks,
+           messages_since_last_engagement, updated_at
+    FROM contact_engagement
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY (last_engagement_at_ms IS NULL) ASC, last_engagement_at_ms DESC,
+             (last_delivered_at_ms IS NULL) ASC, last_delivered_at_ms DESC`;
+  const { results } = await db.prepare(sql).bind(...args).all<ContactEngagement>();
+  return results ?? [];
+}
+
+// resolveContactID accepts a contact id (c_*) or email and returns the
+// canonical contact_id, or null when no contact matches.
+export async function resolveContactID(
+  db: D1Database,
+  idOrEmail: string,
+): Promise<string | null> {
+  const key = idOrEmail.trim();
+  if (!key) return null;
+  if (key.startsWith('c_')) {
+    const row = await db
+      .prepare(`SELECT id FROM contacts WHERE id = ?`)
+      .bind(key)
+      .first<{ id: string }>();
+    return row?.id ?? null;
+  }
+  const row = await db
+    .prepare(`SELECT id FROM contacts WHERE email = ?`)
+    .bind(key.toLowerCase())
+    .first<{ id: string }>();
+  return row?.id ?? null;
+}
