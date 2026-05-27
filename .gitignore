@@ -9,6 +9,9 @@ x.md
 DRAFT*.md
 draft*.md
 
+# Internal design / scope docs that aren't public-facing
+docs/proposals/
+
 # Go
 bin/
 # Built binaries (anchored so cli/cmd/minigun/ package dir is NOT ignored)
