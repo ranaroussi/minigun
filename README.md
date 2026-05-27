@@ -1,13 +1,57 @@
 # MiniGun
 
-A tiny self-hosted email sender on top of [Mailgun](https://www.mailgun.com). Author your emails in **Markdown**, drive it from a **CLI** or an **AI client over MCP**, and deploy it **straight to the Cloudflare edge** — no Redis, no queue service, no long-running process required. Also packaged as a single Go binary or a Docker container if you'd rather host it yourself.
+A tiny self-hosted email sender that sits on top of [Mailgun](https://www.mailgun.com). Write your emails in **Markdown**, drive it from a **CLI** or any **AI client over MCP**, and deploy it to **Cloudflare's edge** — zero infra, no Redis, no queue service, no long-running process. Also packaged as a single Go binary or a Docker container if you'd rather host it yourself.
+
+### At a glance
+
+- **Markdown templates** with `{{first_name | "there"}}` variable defaults — no MJML, no HTML builder, no second template language.
+- **Crash-safe bulk sends** that survive worker restarts and resume from the last completed batch. Run a 100k-recipient send on a Cloudflare Worker without a single long-running process.
+- **Automatic list hygiene** — hard bounces and spam complaints purge themselves in real time via a signed Mailgun webhook. Your list self-heals.
+- **HMAC unsubscribe tokens** — stateless, no DB lookup to verify, no Mailgun suppression-list lock-in. You own the unsub flow forever.
+- **First-class CLI** — install with one `go install`, drive every server operation with sensible flags + `--watch` mode for tailing in-flight sends.
+- **Agent-ready** — MCP server + a deep operator [skill](./skill/minigun/SKILL.md) that teaches AI clients to run campaigns end-to-end (dispatch rules, IP warming, DMARC graduation, anti-patterns to push back on).
+- **Zero-dep SDKs** for PHP / Python / TypeScript / Go — single drop-in files, no `axios` / `requests` / `guzzle`.
+
+> Mailgun does delivery, tracking, and deliverability. MiniGun owns everything else you'd otherwise glue together — contacts, lists, unsubscribe pages, crash recovery, stats persistence, and list cleanup.
+
+### Try it in 60 seconds
+
+Install the CLI:
 
 ```bash
 go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
+```
 
+If you already have a MiniGun deployment (or are running one locally via `wrangler dev`), verify it end-to-end with Mailgun's `testmode` — the message is accepted, logged, and counted, but **never delivered**:
+
+```bash
 export MINIGUN_API_URL=https://mailer.example.com
 export MINIGUN_API_TOKEN=...
 
+minigun health                                            # is the worker up?
+minigun send single --testmode \
+  --to you@example.com \
+  --from "You <you@example.com>" \
+  --subject "MiniGun smoke test" \
+  --company acme \
+  --md "Hi {{first_name | 'there'}}, this is a test."
+```
+
+Confirm the send appears in your Mailgun dashboard (Sending → Logs) and you've verified every layer — DNS, auth, the worker, Mailgun — without spamming yourself.
+
+Don't have a MiniGun deployment yet? Pick one of three install paths — every one is documented:
+
+| Target | When to pick it | Walkthrough |
+|---|---|---|
+| **Cloudflare Worker + D1** | Zero infra. Free for any volume Mailgun's free tier supports. Bulk sends survive crashes because there's no process to crash. | [docs/cloudflare.md](./docs/cloudflare.md) |
+| **Go binary** | On-prem, single VM, or you want a long-running process you can `systemctl` around. | [docs/binary.md](./docs/binary.md) |
+| **Docker / Compose** | Containerised stack; one-line `docker run` and you're up. | [docs/docker.md](./docs/docker.md) |
+
+### Your first newsletter
+
+The full arc — create a list, add a subscriber, write copy in Markdown, send to the list:
+
+```bash
 minigun list create  --name "Weekly" --slug weekly
 minigun contact add  weekly alice@example.com --params '{"first_name":"Alice"}'
 
@@ -23,6 +67,8 @@ EOF
 minigun send bulk --list weekly --subject "Weekly update" \
   --from "Ran <ran@example.com>" --md ./week-12.md
 ```
+
+The `POST /send/bulk` returns a `send_id` immediately and a background loop drives the batches. Poll status with `minigun send status <id> --watch` and stats with `minigun send stats <id>` — persisted locally forever, even after Mailgun's 5-day event log retention expires.
 
 ## Why MiniGun
 
@@ -200,20 +246,6 @@ CLI / MCP ──┘            │
 ```
 
 One HTTP service, two implementations (Go binary, Cloudflare Worker), one shared schema, one shared token format. Bulk sends are always async: `POST /send/bulk` returns a `send_id` immediately while a background loop (goroutine in the Go server, self-invoking HTTP chain in the Worker) drives the batches forward.
-
-## Deploy
-
-| Target | When to pick it | Walkthrough |
-|---|---|---|
-| **Cloudflare Worker + D1** | Zero infra; bulk sends survive crashes because there is no process to crash. | [docs/cloudflare.md](./docs/cloudflare.md) |
-| Go binary (systemd / bare-metal) | On-prem or single-VM; want a real long-running process. | [docs/binary.md](./docs/binary.md) |
-| Docker / Compose | Containerised stack; one-line `docker run`. | [docs/docker.md](./docs/docker.md) |
-
-Then install the CLI + MCP on your laptop:
-
-```bash
-go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
-```
 
 ## SDKs
 

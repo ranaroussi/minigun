@@ -4,6 +4,11 @@ credentials.md
 .env.*
 !.env.example
 
+# Drafts / personal writing that shouldn't ship in the public repo
+x.md
+DRAFT*.md
+draft*.md
+
 # Go
 bin/
 # Built binaries (anchored so cli/cmd/minigun/ package dir is NOT ignored)
