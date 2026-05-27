@@ -230,6 +230,21 @@ All four are stdlib-only — no `requests`, no `axios`, no `guzzle`, no external
 
 See [sdks/README.md](./sdks/README.md) for the cross-language overview and the matching method-name table.
 
+## Agent skill
+
+For [Factory Droid](https://factory.ai) (and any AI client that loads external context files), this repo ships a complete operator skill at [`skill/minigun/SKILL.md`](./skill/minigun/SKILL.md). It's not a CLI wrapper — it's a deep playbook covering: how to pick `send_single` vs `send_bulk`, the pre-send checklist, post-send polling, failure recovery, the IP warming schedule, DMARC graduation, content red flags, list hygiene, and the anti-patterns to push back on.
+
+Install once with a symlink to keep it in sync as the repo evolves:
+
+```bash
+mkdir -p ~/.factory/skills
+ln -s "$(pwd)/skill/minigun" ~/.factory/skills/minigun
+```
+
+Pair it with the MiniGun MCP server (covered above under *MCP server — drive it with an AI*) for full autonomy — the skill teaches the playbook, the MCP server gives the agent hands.
+
+→ [skill/README.md](./skill/README.md) for install / usage from other AI clients.
+
 ## API
 
 The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, all routes require `Authorization: Bearer <token>` except `/healthz`, `/u/{token}`, `/manage/{token}`, and `/webhooks/*` (the unsubscribe / manage routes carry their own HMAC token in the URL; the webhook routes are HMAC-verified per-request against the Mailgun signing key).
@@ -325,11 +340,13 @@ cd worker && npm install        && npx tsc --noEmit && npx wrangler dev
 │   ├── wrangler.toml
 │   ├── migrations/         # D1 migrations mirroring the Go server's goose migrations
 │   └── src/
-└── sdks/                   # Single-file, zero-dep client SDKs (one per language)
-    ├── php/minigun.php
-    ├── python/minigun.py
-    ├── typescript/minigun.ts
-    └── go/{go.mod,minigun.go}
+├── sdks/                   # Single-file, zero-dep client SDKs (one per language)
+│   ├── php/minigun.php
+│   ├── python/minigun.py
+│   ├── typescript/minigun.ts
+│   └── go/{go.mod,minigun.go}
+└── skill/                  # Factory Droid (and any MCP-aware agent) operator skill
+    └── minigun/SKILL.md
 ```
 
 ## License
