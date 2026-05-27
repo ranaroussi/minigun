@@ -41,6 +41,7 @@ Mailgun is excellent at sending email. It is not opinionated about how you store
 - Permanent per-send stats. Mailgun retains event logs for only 5 days; MiniGun pulls the Metrics API on a front-loaded schedule (+0, +1h, +6h, +24h, +48h, +5d after completion) and persists the aggregates locally.
 - Clean Gmail rendering on cross-domain `From` headers. MiniGun always sets `Sender: <From>` so Mailgun doesn't rewrite it to a VERP bounce address, which is what makes Gmail show `From: brand@example.com via mailgun-route.example.com` and hide the native one-click unsubscribe.
 - Dry-run sends. `minigun send bulk --testmode` (or `send single --testmode`) runs the full pipeline through to Mailgun with `o:testmode=yes`: the message is accepted and logged but not delivered. The flag is persisted on the send row, so cron-resumed chains keep it set for every subsequent batch.
+- Automatic list hygiene. A Mailgun-signed webhook auto-removes hard-bouncing addresses and spam-complainers from every list, in real time — no cron job, no manual cleanup, no third-party suppression service. Bounce purges the contact + all subscriptions; complaint also writes a permanent audit row so the address can be filtered out of future imports. HMAC-verified, replay-bounded, idempotent against Mailgun's retries.
 
 The philosophy:
 
@@ -126,6 +127,54 @@ Text: Unsubscribe:
 
 No MJML. No HTML email builder. No second template language. Just Markdown.
 
+### Automatic list hygiene
+
+The single biggest reason newsletter senders trash their reputation is mailing addresses that no longer exist (hard bounces) or actively flagged the previous send as spam. MiniGun handles both automatically.
+
+`POST /webhooks/mailgun` is a Mailgun webhook endpoint that listens for the two events that matter:
+
+| Event | Action |
+|---|---|
+| `failed` + `severity=permanent` (hard bounce) | Contact + every subscription on every list, **purged**. |
+| `complained` (spam complaint / FBL) | Contact + every subscription **purged**, AND a permanent row is written to `complaint_events` so the address can be filtered out of future CSV imports. |
+| `failed` + `severity=temporary` (soft bounce) | No-op. Mailgun is already retrying on the SMTP side. |
+| `delivered`, `opened`, `clicked`, anything else | No-op 200. |
+
+Every payload is HMAC-verified before we look at the body. The scheme matches Mailgun's reference exactly:
+
+```
+expected = hex(HMAC_SHA256(signing_key, timestamp + token))
+accept   = constant-time-equal(expected, payload.signature) ∧ |now - timestamp| < 15min
+```
+
+Without `MAILGUN_WEBHOOK_SIGNING_KEY` configured, the endpoint **fails closed**: every request is `401`. So setup is one secret + a registration in Mailgun's dashboard (Sending → Webhooks):
+
+```bash
+# Worker:
+echo 'paste-mailgun-http-webhook-signing-key-here' \
+  | wrangler secret put MAILGUN_WEBHOOK_SIGNING_KEY
+
+# Binary:
+export MAILGUN_WEBHOOK_SIGNING_KEY=...
+```
+
+Then register `https://your-domain/webhooks/mailgun` for "Permanent Failure" and "Spam Complaints" on each sending domain.
+
+Idempotent at every layer:
+- `complaint_events.mailgun_event_id` is `UNIQUE` + `INSERT OR IGNORE` → webhook retries deduplicate at the storage layer.
+- `DeleteContact` returns 200 `already-gone` (not 500) when the contact's already been purged by a prior delivery → Mailgun stops retrying instead of looping for 8 hours.
+- HMAC verification is constant-time. Timestamps in the future are rejected as aggressively as stale ones.
+
+There's also a manual purge endpoint for when you need to script bounce cleanup yourself (e.g. importing a list of hard bounces from a previous provider):
+
+```bash
+minigun contact delete bounced@example.com
+# or by id:
+minigun contact delete c_PP5AA3MBXS
+```
+
+Same semantics as the webhook path — full purge of the contact + all subscriptions + unsubscribe-event audit rows. Distinct from `contact unsubscribe`, which preserves the subscription row with `subscribed=0` (correct for user-initiated opt-outs).
+
 ## Architecture
 
 ```
@@ -154,7 +203,7 @@ go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
 
 ## API
 
-The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, all routes require `Authorization: Bearer <token>` except `/healthz`, `/u/{token}`, and `/manage/{token}` (the last two carry their own HMAC token in the URL).
+The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, all routes require `Authorization: Bearer <token>` except `/healthz`, `/u/{token}`, `/manage/{token}`, and `/webhooks/*` (the unsubscribe / manage routes carry their own HMAC token in the URL; the webhook routes are HMAC-verified per-request against the Mailgun signing key).
 
 | Method | Path                                       | Purpose |
 |--------|--------------------------------------------|---------|
@@ -168,7 +217,8 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | GET    | `/lists/{list}`                            | One list with `subscribed_count`, `total_count`, `last_send_at`. |
 | GET    | `/lists/{list}/contacts?cursor=&limit=`    | Paginated contacts for a list. |
 | POST   | `/lists/{list}/contacts`                   | Upsert contact + subscription. |
-| POST   | `/lists/{list}/unsubscribe`                | Admin unsubscribe by email. |
+| POST   | `/lists/{list}/unsubscribe`                | Admin unsubscribe by email (keeps row, marks `subscribed=0`). |
+| DELETE | `/contacts/{idOrEmail}`                    | Hard-delete a contact + all subscriptions + audit rows (hard-bounce cleanup). |
 | GET    | `/sends?cursor=&limit=`                    | Paginated send history (created_at desc). |
 | POST   | `/send/bulk`                               | Start a bulk send. |
 | POST   | `/send/single`                             | Send a single transactional email. |
@@ -180,6 +230,7 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | POST   | `/u/{token}`                               | Perform the unsubscribe (form post or RFC 8058 one-click). |
 | GET    | `/manage/{token}`                          | Render the combined company-wide preferences page. |
 | POST   | `/manage/{token}`                          | Apply preference deltas across the company's lists. |
+| POST   | `/webhooks/mailgun`                        | HMAC-verified Mailgun webhook: auto-purge on hard bounce / spam complaint. |
 
 `{list}` and `{company}` accept either id or slug. Listing endpoints use opaque base64 cursors; default `limit` is 50, max 500.
 
@@ -197,6 +248,7 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | `MINIGUN_LISTEN_ADDR`          | no       | `:8080`                  | HTTP listen address (Go server only). |
 | `MINIGUN_TURNSTILE_SITE_KEY`   | no       | —                        | Cloudflare Turnstile site key. |
 | `MINIGUN_TURNSTILE_SECRET_KEY` | no       | —                        | Turnstile secret. Required when site key is set. |
+| `MAILGUN_WEBHOOK_SIGNING_KEY`  | no       | —                        | Mailgun "HTTP webhook signing key" (Sending → Webhooks). When set, `/webhooks/mailgun` accepts signed bounce/complaint events and auto-purges contacts. When unset, the endpoint refuses all requests. |
 
 Per-deployment specifics (D1 binding for the Worker, secrets vs vars, etc.) live in the install docs.
 
