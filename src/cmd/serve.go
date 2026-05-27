@@ -62,6 +62,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Error("recover pending sends", "err", err)
 	}
 	go wm.RunStatsScheduler(ctx, 15*time.Minute)
+	// Events archive scheduler — internally no-ops when
+	// cfg.EventsArchiveEnabled is false. We spawn the goroutine
+	// unconditionally so flipping EVENTS_ARCHIVE_ENABLED=true at runtime
+	// only requires a config reload, not a process restart.
+	go wm.RunEventsArchiveScheduler(ctx, 15*time.Minute)
 
 	srv := api.New(cfg, st, mg, wm, ts, log)
 	httpServer := &http.Server{

@@ -10,6 +10,7 @@ import { mountSends } from './routes/sends';
 import { mountUnsubscribe } from './routes/unsubscribe';
 import { mountWebhooks } from './routes/webhooks';
 import { sweepStuckSends } from './send/cron';
+import { pullDueSendEvents } from './send/events_pull';
 import { refreshDueStats } from './send/stats';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -46,5 +47,9 @@ export default {
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(sweepStuckSends(env));
     ctx.waitUntil(refreshDueStats(env));
+    // pullDueSendEvents internally short-circuits when EVENTS_ARCHIVE_ENABLED
+    // is not "true", so this is a near-zero-cost noop until Phase 2 is
+    // activated by setting the flag.
+    ctx.waitUntil(pullDueSendEvents(env));
   },
 };

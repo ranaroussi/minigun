@@ -162,6 +162,83 @@ export async function perSendMetrics(
   return totals;
 }
 
+// ---------------------------------------------------------------------------
+// Events API
+// ---------------------------------------------------------------------------
+
+// Raw event shape returned by Mailgun's GET /v3/<domain>/events. Mailgun's
+// API is loosely-typed (event-specific fields appear or vanish by event type)
+// so this type accepts `any` for the variable-shape fields and we normalize
+// downstream when persisting to the archive.
+export type MailgunEventRaw = {
+  id: string;
+  event: string;
+  timestamp: number;
+  recipient?: string;
+  severity?: string;
+  reason?: string;
+  url?: string;
+  tags?: string[];
+  message?: {
+    headers?: {
+      'message-id'?: string;
+      [k: string]: unknown;
+    };
+    [k: string]: unknown;
+  };
+  'client-info'?: Record<string, unknown>;
+  geolocation?: Record<string, unknown>;
+  'user-variables'?: Record<string, unknown>;
+  [k: string]: unknown;
+};
+
+export type EventsPage = {
+  items: MailgunEventRaw[];
+  paging?: {
+    next?: string;
+    previous?: string;
+    first?: string;
+    last?: string;
+  };
+};
+
+// Fetch one page of events for a domain. When `tag` is set we filter to
+// events whose o:tag matches (i.e. all events for one MiniGun send_id).
+// When `pageURL` is set we follow Mailgun's cursor directly — this is how
+// pagination works (the next page URL comes back in the previous response).
+export async function fetchEvents(
+  env: Env,
+  args:
+    | { domain: string; tag?: string; beginMs?: number; endMs?: number; limit?: number }
+    | { pageURL: string },
+): Promise<EventsPage> {
+  let url: string;
+  if ('pageURL' in args) {
+    url = args.pageURL;
+  } else {
+    const params = new URLSearchParams();
+    params.set('ascending', 'yes');
+    params.set('limit', String(args.limit ?? 300));
+    if (args.tag) params.set('tags', args.tag);
+    // Mailgun's events API accepts begin/end as RFC 2822 strings OR floats
+    // (epoch seconds). Floats are more robust across regions.
+    if (args.beginMs !== undefined) params.set('begin', String(args.beginMs / 1000));
+    if (args.endMs !== undefined) params.set('end', String(args.endMs / 1000));
+    url = `${mailgunApiBase(env)}/v3/${args.domain}/events?${params.toString()}`;
+  }
+  const resp = await fetch(url, {
+    method: 'GET',
+    headers: { Authorization: basicAuth(env.MAILGUN_API_KEY) },
+  });
+  const body = await resp.text();
+  if (!resp.ok) throw new MailgunAPIError(resp.status, body);
+  try {
+    return JSON.parse(body) as EventsPage;
+  } catch {
+    return { items: [] };
+  }
+}
+
 export async function metrics(
   env: Env,
   start: Date,
