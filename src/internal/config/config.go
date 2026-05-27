@@ -22,6 +22,12 @@ type Config struct {
 	TurnstileSecretKey string
 
 	APIToken string
+
+	// Shared HMAC secret used to verify Mailgun webhook payloads. Set
+	// via the dashboard at Sending → Webhooks → "HTTP webhook signing
+	// key". When empty, the /webhooks/mailgun endpoint refuses all
+	// requests (fail-closed) so we never trust an unsigned payload.
+	MailgunWebhookSigningKey string
 }
 
 func FromEnv() (*Config, error) {
@@ -36,6 +42,7 @@ func FromEnv() (*Config, error) {
 		TurnstileSiteKey:   os.Getenv("MINIGUN_TURNSTILE_SITE_KEY"),
 		TurnstileSecretKey: os.Getenv("MINIGUN_TURNSTILE_SECRET_KEY"),
 		APIToken:           os.Getenv("MINIGUN_API_TOKEN"),
+		MailgunWebhookSigningKey: os.Getenv("MAILGUN_WEBHOOK_SIGNING_KEY"),
 	}
 
 	if c.MailgunAPIBase == "" {

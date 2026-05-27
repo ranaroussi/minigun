@@ -69,6 +69,8 @@ func (s *Server) routes() chi.Router {
 
 	r.Delete("/contacts/{idOrEmail}", s.handleDeleteContact)
 
+	r.Post("/webhooks/mailgun", s.handleMailgunWebhook)
+
 	r.Get("/sends", s.handleListSends)
 	r.Post("/send/bulk", s.handleBulkSend)
 	r.Post("/send/single", s.handleSingleSend)

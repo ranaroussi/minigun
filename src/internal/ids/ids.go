@@ -12,6 +12,7 @@ const (
 	PrefixSend    = "s_"
 	PrefixBatch   = "b_"
 	PrefixUnsub   = "u_"
+	PrefixComplaint = "cmp_"
 )
 
 var enc = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -30,3 +31,4 @@ func NewContact() string { return New(PrefixContact) }
 func NewSend() string    { return New(PrefixSend) }
 func NewBatch() string   { return New(PrefixBatch) }
 func NewUnsub() string   { return New(PrefixUnsub) }
+func NewComplaint() string { return New(PrefixComplaint) }

@@ -13,6 +13,9 @@ function isExempt(pathname: string): boolean {
   if (pathname === '/healthz') return true;
   if (pathname.startsWith('/u/')) return true;
   if (pathname.startsWith('/manage/')) return true;
+  // Webhooks authenticate via Mailgun HMAC signature instead of the
+  // operator's Bearer token (the third-party caller doesn't have one).
+  if (pathname.startsWith('/webhooks/')) return true;
   return false;
 }
 

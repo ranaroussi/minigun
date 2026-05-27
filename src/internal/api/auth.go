@@ -41,5 +41,10 @@ func isAuthExempt(path string) bool {
 	if strings.HasPrefix(path, "/manage/") {
 		return true
 	}
+	// Webhooks authenticate via Mailgun HMAC signature inside the
+	// handler instead of the operator's bearer token.
+	if strings.HasPrefix(path, "/webhooks/") {
+		return true
+	}
 	return false
 }

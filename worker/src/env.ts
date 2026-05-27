@@ -12,6 +12,7 @@ export type Env = {
   MINIGUN_API_TOKEN?: string;
   MINIGUN_TURNSTILE_SITE_KEY?: string;
   MINIGUN_TURNSTILE_SECRET_KEY?: string;
+  MAILGUN_WEBHOOK_SIGNING_KEY?: string;
 };
 
 export function mailgunApiBase(env: Env): string {

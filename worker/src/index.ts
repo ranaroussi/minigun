@@ -8,6 +8,7 @@ import { mountLists } from './routes/lists';
 import { mountManage } from './routes/manage';
 import { mountSends } from './routes/sends';
 import { mountUnsubscribe } from './routes/unsubscribe';
+import { mountWebhooks } from './routes/webhooks';
 import { sweepStuckSends } from './send/cron';
 import { refreshDueStats } from './send/stats';
 
@@ -32,6 +33,7 @@ mountContacts(app);
 mountSends(app);
 mountUnsubscribe(app);
 mountManage(app);
+mountWebhooks(app);
 
 app.notFound((c) => c.json({ error: 'not found' }, 404));
 app.onError((err, c) => {
