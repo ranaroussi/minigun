@@ -1,3 +1,5 @@
+<img width="1720" height="688" alt="image" src="https://github.com/user-attachments/assets/039d9c6d-7488-49ac-a791-621f36122c95" />
+
 # MiniGun
 
 A tiny self-hosted email sender that sits on top of [Mailgun](https://www.mailgun.com). Write your emails in **Markdown**, drive it from a **CLI** or any **AI client over MCP**, and deploy it to **Cloudflare's edge** — zero infra, no Redis, no queue service, no long-running process. Also packaged as a single Go binary or a Docker container if you'd rather host it yourself.
