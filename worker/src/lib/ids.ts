@@ -25,6 +25,7 @@ export const PrefixSend = 's_';
 export const PrefixBatch = 'b_';
 export const PrefixUnsub = 'u_';
 export const PrefixComplaint = 'cmp_';
+export const PrefixMailgunEvent = 'mge_';
 
 export function newID(prefix: string): string {
   const b = new Uint8Array(10);
@@ -39,3 +40,4 @@ export const newSend = () => newID(PrefixSend);
 export const newBatch = () => newID(PrefixBatch);
 export const newUnsub = () => newID(PrefixUnsub);
 export const newComplaint = () => newID(PrefixComplaint);
+export const newMailgunEvent = () => newID(PrefixMailgunEvent);

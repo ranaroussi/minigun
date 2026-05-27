@@ -28,6 +28,14 @@ type Config struct {
 	// key". When empty, the /webhooks/mailgun endpoint refuses all
 	// requests (fail-closed) so we never trust an unsigned payload.
 	MailgunWebhookSigningKey string
+
+	// Feature flag for the Mailgun events archive (Phase 2+ of the
+	// rollout). When false, the events-pull cron and contact_engagement
+	// maintenance remain dormant — Phase 1 only ships the schema and
+	// send-path tagging, so the data starts accumulating on Mailgun's
+	// side ahead of any local archive activity. Flip to true once the
+	// consumer code lands.
+	EventsArchiveEnabled bool
 }
 
 func FromEnv() (*Config, error) {
@@ -43,6 +51,7 @@ func FromEnv() (*Config, error) {
 		TurnstileSecretKey: os.Getenv("MINIGUN_TURNSTILE_SECRET_KEY"),
 		APIToken:           os.Getenv("MINIGUN_API_TOKEN"),
 		MailgunWebhookSigningKey: os.Getenv("MAILGUN_WEBHOOK_SIGNING_KEY"),
+		EventsArchiveEnabled:     strings.EqualFold(os.Getenv("EVENTS_ARCHIVE_ENABLED"), "true"),
 	}
 
 	if c.MailgunAPIBase == "" {

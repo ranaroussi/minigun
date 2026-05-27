@@ -149,6 +149,14 @@ func (m *Manager) runSingle(ctx context.Context, snd *models.Send) error {
 		TestMode:              snd.TestMode,
 		ListUnsubscribe:       listUnsub,
 		ListUnsubscribePost:   listUnsubPost,
+		// v:minigun_send_id is a redundant safety net for the events archive.
+		// The o:tag above is the primary anchor (it's how the events-pull
+		// cron filters Mailgun's events API by send_id). The user variable
+		// makes the send_id available inside every event's user_variables
+		// blob without re-parsing the tag — useful for richer queries later.
+		CustomVars: map[string]string{
+			"minigun_send_id": snd.ID,
+		},
 	}
 	if snd.ReplyTo != nil {
 		msg.ReplyTo = *snd.ReplyTo

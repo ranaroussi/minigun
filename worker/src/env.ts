@@ -13,7 +13,19 @@ export type Env = {
   MINIGUN_TURNSTILE_SITE_KEY?: string;
   MINIGUN_TURNSTILE_SECRET_KEY?: string;
   MAILGUN_WEBHOOK_SIGNING_KEY?: string;
+
+  // Feature flag for the Mailgun events archive (Phase 2+ of the rollout).
+  // When undefined or anything other than the literal string "true", the
+  // events-pull cron and contact_engagement maintenance remain dormant —
+  // Phase 1 only ships the schema and send-path tagging, so the data starts
+  // accumulating on Mailgun's side ahead of any local archive activity.
+  // Set to "true" to activate ingestion once the consumer code lands.
+  EVENTS_ARCHIVE_ENABLED?: string;
 };
+
+export function eventsArchiveEnabled(env: Env): boolean {
+  return (env.EVENTS_ARCHIVE_ENABLED ?? '').toLowerCase() === 'true';
+}
 
 export function mailgunApiBase(env: Env): string {
   if (env.MAILGUN_API_BASE) return env.MAILGUN_API_BASE.replace(/\/$/, '');
