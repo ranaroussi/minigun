@@ -215,6 +215,21 @@ Then install the CLI + MCP on your laptop:
 go install github.com/ranaroussi/minigun/cli/cmd/minigun@latest
 ```
 
+## SDKs
+
+Single-file, zero-dependency drop-in clients for the most common server languages. Every SDK exposes the same surface (contacts, sends, status, stats, resume, delete) with the same error model — pick whichever fits your stack:
+
+| Language | File | Drop in / install | Reference |
+|---|---|---|---|
+| **PHP** (7.4+) | [`sdks/php/minigun.php`](./sdks/php/minigun.php) | `require_once 'minigun.php';` | [sdks/php/README.md](./sdks/php/README.md) |
+| **Python** (3.9+) | [`sdks/python/minigun.py`](./sdks/python/minigun.py) | drop the file in, `from minigun import Minigun` | [sdks/python/README.md](./sdks/python/README.md) |
+| **TypeScript** (ES2020+) | [`sdks/typescript/minigun.ts`](./sdks/typescript/minigun.ts) | drop the file in, `import { Minigun } from './minigun'` | [sdks/typescript/README.md](./sdks/typescript/README.md) |
+| **Go** (1.21+) | [`sdks/go/minigun.go`](./sdks/go/minigun.go) | `go get github.com/ranaroussi/minigun/sdks/go` | [sdks/go/README.md](./sdks/go/README.md) |
+
+All four are stdlib-only — no `requests`, no `axios`, no `guzzle`, no external Go modules — so they slot into any project without touching its dependency tree. The TypeScript SDK uses the standard `fetch` API, so it runs unchanged on Node 18+, Bun, Deno, Cloudflare Workers, and the browser.
+
+See [sdks/README.md](./sdks/README.md) for the cross-language overview and the matching method-name table.
+
 ## API
 
 The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, all routes require `Authorization: Bearer <token>` except `/healthz`, `/u/{token}`, `/manage/{token}`, and `/webhooks/*` (the unsubscribe / manage routes carry their own HMAC token in the URL; the webhook routes are HMAC-verified per-request against the Mailgun signing key).
@@ -306,10 +321,15 @@ cd worker && npm install        && npx tsc --noEmit && npx wrangler dev
 │   │   ├── minigun/main.go # `go install` entry point — produces the `minigun` binary
 │   │   └── *.go            # cobra commands
 │   └── internal/
-└── worker/                 # Cloudflare Worker port (TypeScript + Hono + D1 + Web Crypto)
-    ├── wrangler.toml
-    ├── migrations/         # D1 migrations mirroring the Go server's goose migrations
-    └── src/
+├── worker/                 # Cloudflare Worker port (TypeScript + Hono + D1 + Web Crypto)
+│   ├── wrangler.toml
+│   ├── migrations/         # D1 migrations mirroring the Go server's goose migrations
+│   └── src/
+└── sdks/                   # Single-file, zero-dep client SDKs (one per language)
+    ├── php/minigun.php
+    ├── python/minigun.py
+    ├── typescript/minigun.ts
+    └── go/{go.mod,minigun.go}
 ```
 
 ## License
