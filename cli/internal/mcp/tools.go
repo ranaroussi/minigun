@@ -18,6 +18,7 @@ func RegisterTools(s *mcpsdk.Server, c *client.Client) {
 	addCreateList(s, c)
 	addAddContact(s, c)
 	addUnsubscribeContact(s, c)
+	addDeleteContact(s, c)
 	addSendSingle(s, c)
 	addSendBulk(s, c)
 	addResumeSend(s, c)
@@ -187,6 +188,24 @@ func addUnsubscribeContact(s *mcpsdk.Server, c *client.Client) {
 		},
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in unsubscribeContactInput) (*mcpsdk.CallToolResult, struct{}, error) {
 		return passthrough(c.Post("/lists/"+in.List+"/unsubscribe", map[string]any{"email": in.Email}))
+	})
+}
+
+type deleteContactInput struct {
+	IDOrEmail string `json:"id_or_email" jsonschema:"Contact id (c_*) or email address. Both are accepted."`
+}
+
+func addDeleteContact(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "delete_contact",
+		Description: "DESTRUCTIVE. Permanently purges a contact and all their subscriptions + unsubscribe-event audit rows. Use for hard-bounce cleanup (the Mailgun webhook does this automatically; this tool is for manual / scripted purges, e.g. importing a hard-bounce list from a previous provider). For user-initiated opt-outs prefer unsubscribe_contact, which preserves the row with subscribed=0.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			DestructiveHint: boolPtr(true),
+			IdempotentHint:  true,
+			Title:           "Delete contact",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in deleteContactInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		return passthrough(c.Delete("/contacts/" + in.IDOrEmail))
 	})
 }
 

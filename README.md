@@ -65,6 +65,7 @@ A single `minigun` command — installable with one `go install` — that expose
 minigun health
 minigun list    create     --name "Weekly" --slug weekly
 minigun contact add        weekly ran@example.com --params '{"first_name":"Ran"}'
+minigun contact delete     bounced@example.com    # hard-bounce purge (or by c_xxxx id)
 minigun send    bulk       --list weekly --subject "Hi" --from "Ran <r@x.com>" --md ./email.md
 minigun send    status     s_xxxx --watch
 minigun send    stats      s_xxxx
@@ -165,15 +166,28 @@ Idempotent at every layer:
 - `DeleteContact` returns 200 `already-gone` (not 500) when the contact's already been purged by a prior delivery → Mailgun stops retrying instead of looping for 8 hours.
 - HMAC verification is constant-time. Timestamps in the future are rejected as aggressively as stale ones.
 
-There's also a manual purge endpoint for when you need to script bounce cleanup yourself (e.g. importing a list of hard bounces from a previous provider):
+The same hard-purge that the webhook performs is also available as a first-class operation across all three surfaces, for when you need to script bounce cleanup yourself (e.g. importing a list of hard bounces from a previous provider, or pruning a stale segment by hand):
 
 ```bash
+# HTTP:
+curl -X DELETE -H "Authorization: Bearer $MINIGUN_API_TOKEN" \
+     https://your-domain/contacts/bounced@example.com
+# or:
+curl -X DELETE -H "Authorization: Bearer $MINIGUN_API_TOKEN" \
+     https://your-domain/contacts/c_PP5AA3MBXS
+
+# CLI:
 minigun contact delete bounced@example.com
-# or by id:
 minigun contact delete c_PP5AA3MBXS
+
+# MCP (from any client — Claude, Cursor, Zed, etc.):
+#   tool: delete_contact
+#   args: { "id_or_email": "bounced@example.com" }
 ```
 
-Same semantics as the webhook path — full purge of the contact + all subscriptions + unsubscribe-event audit rows. Distinct from `contact unsubscribe`, which preserves the subscription row with `subscribed=0` (correct for user-initiated opt-outs).
+The endpoint accepts either the contact id (`c_*`) or the email address, and returns the deleted contact + how many subscriptions were removed. Same semantics as the webhook path — full purge of the contact + all subscriptions + unsubscribe-event audit rows in a single transaction.
+
+Distinct from `contact unsubscribe`, which preserves the subscription row with `subscribed=0` (correct for user-initiated opt-outs — you want to remember they opted out so a future re-import doesn't silently re-subscribe them).
 
 ## Architecture
 
