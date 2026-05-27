@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { Env } from '../env';
 import { resolveList } from '../store/lists';
-import { upsertContact } from '../store/contacts';
+import { deleteContact, upsertContact } from '../store/contacts';
 import {
   unsubscribeByListAndEmail,
   upsertSubscription,
@@ -34,6 +34,27 @@ export function mountContacts(app: Hono<{ Bindings: Env }>) {
         subscribed: sub.subscribed,
       },
     });
+  });
+
+  // Full contact purge — wipes the contact row and every subscription /
+  // unsubscribe-event that references them. Intended for hard-bounce
+  // cleanup so the address can never be picked up by a future bulk
+  // send. Accepts either a contact id (c_...) or a lowercase email.
+  app.delete('/contacts/:idOrEmail', async (c) => {
+    const key = c.req.param('idOrEmail');
+    if (!key) return c.json({ error: 'id or email required' }, 400);
+    try {
+      const result = await deleteContact(c.env.DB, decodeURIComponent(key));
+      return c.json({
+        deleted: true,
+        contact: result.contact,
+        subscriptions_removed: result.subscriptions_removed,
+        unsub_events_removed: result.unsub_events_removed,
+      });
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: 'contact not found' }, 404);
+      throw err;
+    }
   });
 
   app.post('/lists/:list/unsubscribe', async (c) => {

@@ -52,6 +52,42 @@ export async function getContactByID(db: D1Database, id: string): Promise<Contac
   return row;
 }
 
+export type ContactDeletionResult = {
+  contact: Contact;
+  subscriptions_removed: number;
+  unsub_events_removed: number;
+};
+
+// Permanently removes a contact and every row that references them
+// (subscriptions + the historical unsubscribe_events audit log).
+// Intended for hard-bounce cleanup; do NOT use as the normal opt-out
+// path (that should remain UpsertSubscription({subscribed: 0}) so the
+// suppression record survives).
+//
+// Atomicity: D1's batch() commits all statements in a single
+// transaction, so a mid-delete failure leaves the contact intact.
+export async function deleteContact(
+  db: D1Database,
+  idOrEmail: string,
+): Promise<ContactDeletionResult> {
+  const key = idOrEmail.trim();
+  if (!key) throw new Error('id or email is required');
+  const contact = key.startsWith('c_')
+    ? await getContactByID(db, key)
+    : await getContactByEmail(db, key);
+
+  const results = await db.batch([
+    db.prepare('DELETE FROM unsubscribe_events WHERE contact_id = ?').bind(contact.id),
+    db.prepare('DELETE FROM subscriptions WHERE contact_id = ?').bind(contact.id),
+    db.prepare('DELETE FROM contacts WHERE id = ?').bind(contact.id),
+  ]);
+  return {
+    contact,
+    unsub_events_removed: results[0]?.meta?.changes ?? 0,
+    subscriptions_removed: results[1]?.meta?.changes ?? 0,
+  };
+}
+
 export async function getContactByEmail(db: D1Database, email: string): Promise<Contact> {
   const row = await db
     .prepare('SELECT id, email, params, created_at, updated_at FROM contacts WHERE email = ?')

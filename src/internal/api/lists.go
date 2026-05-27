@@ -174,3 +174,31 @@ func (s *Server) handleListUnsubscribe(w http.ResponseWriter, r *http.Request) {
 		"subscription_id": sub.ID,
 	})
 }
+
+// handleDeleteContact fully purges a contact and every row that
+// references them. Use this for hard-bounce cleanup so the address
+// cannot be re-picked-up by a future bulk send; for ordinary opt-outs
+// keep using POST /lists/{list}/unsubscribe so the suppression record
+// survives.
+func (s *Server) handleDeleteContact(w http.ResponseWriter, r *http.Request) {
+	key := strings.TrimSpace(chi.URLParam(r, "idOrEmail"))
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "id or email required")
+		return
+	}
+	result, err := s.store.DeleteContact(r.Context(), key)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "contact not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted":               true,
+		"contact":               result.Contact,
+		"subscriptions_removed": result.SubscriptionsRemoved,
+		"unsub_events_removed":  result.UnsubEventsRemoved,
+	})
+}

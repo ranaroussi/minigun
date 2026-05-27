@@ -95,3 +95,7 @@ func (c *Client) Get(path string) (*Response, error) {
 func (c *Client) Post(path string, body any) (*Response, error) {
 	return c.Do(http.MethodPost, path, body)
 }
+
+func (c *Client) Delete(path string) (*Response, error) {
+	return c.Do(http.MethodDelete, path, nil)
+}

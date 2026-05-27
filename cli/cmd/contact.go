@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/spf13/cobra"
 )
@@ -58,8 +59,30 @@ var contactUnsubscribeCmd = &cobra.Command{
 	},
 }
 
+var contactDeleteCmd = &cobra.Command{
+	Use:   "delete <id-or-email>",
+	Short: "Permanently delete a contact and all their subscriptions / unsubscribe events (use for hard-bounce cleanup)",
+	Long: `Permanently removes a contact and every row that references them
+(subscriptions across all lists + the unsubscribe-events audit log).
+
+Use this for hard-bounce cleanup so the address cannot be picked up by
+a future bulk send. For ordinary opt-outs, prefer 'contact unsubscribe'
+so the suppression record survives.
+
+Accepts either a contact id (c_XXXXXXXXXX) or a lowercase email.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resp, err := newClient().Delete(fmt.Sprintf("/contacts/%s", url.PathEscape(args[0])))
+		if err != nil {
+			return err
+		}
+		printJSON(resp.Body)
+		return resp.Error()
+	},
+}
+
 func init() {
 	contactAddCmd.Flags().StringVar(&contactParamsJSON, "params", "", `JSON object of contact parameters, e.g. '{"first_name":"Ran"}'`)
-	contactCmd.AddCommand(contactAddCmd, contactUnsubscribeCmd)
+	contactCmd.AddCommand(contactAddCmd, contactUnsubscribeCmd, contactDeleteCmd)
 	rootCmd.AddCommand(contactCmd)
 }
