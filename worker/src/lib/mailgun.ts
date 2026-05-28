@@ -167,9 +167,11 @@ export async function perSendMetrics(
 // ---------------------------------------------------------------------------
 
 // Raw event shape returned by Mailgun's GET /v3/<domain>/events. Mailgun's
-// API is loosely-typed (event-specific fields appear or vanish by event type)
-// so this type accepts `any` for the variable-shape fields and we normalize
-// downstream when persisting to the archive.
+// API is loosely-typed (event-specific fields appear or vanish by event
+// type). We only type the fields the engagement rollups consume; the
+// forensic/variable-shape fields (message, client-info, geolocation,
+// user-variables) are left to the index signature since MiniGun keeps no
+// raw event log — events fold straight into the rollups.
 export type MailgunEventRaw = {
   id: string;
   event: string;
@@ -179,16 +181,6 @@ export type MailgunEventRaw = {
   reason?: string;
   url?: string;
   tags?: string[];
-  message?: {
-    headers?: {
-      'message-id'?: string;
-      [k: string]: unknown;
-    };
-    [k: string]: unknown;
-  };
-  'client-info'?: Record<string, unknown>;
-  geolocation?: Record<string, unknown>;
-  'user-variables'?: Record<string, unknown>;
   [k: string]: unknown;
 };
 

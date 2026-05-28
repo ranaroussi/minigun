@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -30,11 +31,6 @@ const (
 	// 30 days matches Mailgun's paid-tier retention; beyond it there's
 	// nothing pullable that we haven't already seen.
 	ArchiveMaxAgeMS int64 = 30 * 24 * 60 * 60 * 1000
-
-	// OverlapMS — every pull re-fetches the last 6h of events. The
-	// UNIQUE(mailgun_event_id) constraint dedupes; this gives us margin
-	// against Mailgun's out-of-order event arrival.
-	OverlapMS int64 = 6 * 60 * 60 * 1000
 
 	// maxPagesPerSend — hard cap on pages fetched per send per beat.
 	// Prevents one cron tick from saturating after a long Mailgun outage.
@@ -99,10 +95,6 @@ func (m *Manager) pullEventsOnce(ctx context.Context) {
 	if !m.cfg.EventsArchiveEnabled {
 		return
 	}
-	// Phase 5: replay any raw events whose engagement update was skipped
-	// in a previous tick (insert succeeded but applyEventToEngagement
-	// failed). Bounded so a backlog drains over multiple ticks.
-	m.replayUnappliedEngagement(ctx, 500)
 	const batchSize = 20
 	nowMs := time.Now().UnixMilli()
 	candidates, err := m.store.ListDueEventPulls(ctx, nowMs, ArchiveMaxAgeMS, batchSize*2)
@@ -144,8 +136,9 @@ func (m *Manager) pullEventsOnce(ctx context.Context) {
 
 // PullEventsForOneSend (exported for use by HTTP/MCP/CLI on-demand triggers)
 // pulls Mailgun events for one send and updates the per-send watermark.
-// Idempotent — calling it twice with no time elapsed is safe (the UNIQUE
-// constraint on mailgun_event_id deduplicates).
+// Idempotent in practice — each pull begins strictly after the previous
+// pull's highest event timestamp, so re-running with no time elapsed
+// fetches an empty window.
 func (m *Manager) PullEventsForOneSend(ctx context.Context, sendID string) (inserted int64, pages int, frozen bool, err error) {
 	nowMs := time.Now().UnixMilli()
 	candidates, err := m.store.ListDueEventPulls(ctx, nowMs, ArchiveMaxAgeMS, 1)
@@ -172,27 +165,35 @@ func (m *Manager) pullEventsForOneSend(ctx context.Context, snd store.DueEventPu
 
 func (m *Manager) pullEventsForOneSendInternal(ctx context.Context, snd store.DueEventPullRow) (inserted int64, pages int, frozen bool, err error) {
 	nowMs := time.Now().UnixMilli()
+	// Incremental window: begin strictly AFTER the highest event
+	// timestamp the previous pull processed (default: the send's
+	// created_at on the first pull). Because Mailgun returns events in
+	// time order and we advance the watermark to the last event we saw,
+	// the next pull never re-fetches an already-counted event — so the
+	// per-call counter increments in the Apply* methods stay correct
+	// without any dedup ledger. The +1ms makes the lower bound exclusive
+	// at storage (ms) granularity.
 	beginMs := snd.CreatedAtMs
 	if snd.EventsLastPulledThroughMs.Valid {
-		beginMs = snd.EventsLastPulledThroughMs.Int64
+		beginMs = snd.EventsLastPulledThroughMs.Int64 + 1
 	}
-	beginMs -= OverlapMS
 	endMs := nowMs
 
 	listID, err := m.store.GetSendListID(ctx, snd.SendID)
 	if err != nil {
 		return 0, 0, false, err
 	}
+	listNS := sql.NullString{String: listID, Valid: listID != ""}
 
-	// lastEventTs tracks the highest event_timestamp_ms we successfully
-	// processed in this batch. Used by the watermark-advance logic below
-	// to avoid the Phase 2 bug where hitting maxPagesPerSend with more
-	// pages remaining would advance the watermark past unprocessed
-	// events (silent data loss). Now: if we cap, advance only to the
-	// last processed event's timestamp — the 6h overlap window on the
-	// next pull will catch anything beyond it.
+	// lastEventTs tracks the highest event_timestamp_ms processed in this
+	// batch — the next pull resumes strictly after it. When maxPagesPerSend
+	// caps the loop with pages remaining we still advance to lastEventTs
+	// (forward progress); the next beat continues from there.
 	var lastEventTs int64
 	cappedWithMorePages := false
+	// contactCache memoizes email→contact_id within this send so a
+	// recipient with many events triggers one lookup, not one per event.
+	contactCache := map[string]sql.NullString{}
 
 	var page *mailgun.EventsPage
 	var pageURL string
@@ -221,37 +222,37 @@ func (m *Manager) pullEventsForOneSendInternal(ctx context.Context, snd store.Du
 			break
 		}
 		for _, raw := range page.Items {
-			ev, ok := store.NormalizeEvent(raw, snd.FromDomain, snd.SendID)
+			ev, ok := store.NormalizeEvent(raw)
 			if !ok {
 				continue
 			}
 			if ev.EventTimestampMs > lastEventTs {
 				lastEventTs = ev.EventTimestampMs
 			}
-			res, insertErr := m.store.InsertEventIfNew(ctx, ev)
-			if insertErr != nil {
-				m.log.Warn("events-pull: insert", "send_id", snd.SendID, "mailgun_event_id", ev.MailgunEventID, "err", insertErr)
-				continue
+			contactID, cached := contactCache[ev.Recipient]
+			if !cached {
+				contactID, err = m.store.LookupContactIDByEmail(ctx, ev.Recipient)
+				if err != nil {
+					return inserted, pages, false, err
+				}
+				contactCache[ev.Recipient] = contactID
 			}
-			if !res.Inserted {
+			if !contactID.Valid {
+				// Event for an address we never stored — nothing to roll up.
 				continue
 			}
 			inserted++
-			// Decide whether to apply engagement. Singles without a
-			// list_id, unresolved contacts, and non-engagement event
-			// types all skip the apply step but immediately flip
-			// engagement_applied=1 so the replay scanner doesn't keep
-			// re-checking them.
-			needsEngagement := listID != "" && res.ContactID.Valid && isEngagementEvent(ev.Event)
-			if needsEngagement {
-				if engErr := m.store.ApplyEventToEngagement(ctx, res.ContactID.String, listID, ev.Event, ev.EventTimestampMs); engErr != nil {
-					m.log.Warn("events-pull: engagement upsert", "send_id", snd.SendID, "contact_id", res.ContactID.String, "err", engErr)
-					// Leave engagement_applied=0; replay will retry.
-					continue
+			// Fold into both engagement tiers. cme (per-send, per-contact
+			// detail) covers more event types than the per-list rollup.
+			if isMessageEvent(ev.Event) {
+				if cmeErr := m.store.ApplyEventToMessageEngagement(ctx, snd.SendID, contactID.String, listNS, ev.Event, ev.EventTimestampMs/1000, ev.Severity, ev.Reason); cmeErr != nil {
+					return inserted, pages, false, cmeErr
 				}
 			}
-			if markErr := m.store.MarkEngagementApplied(ctx, res.ID); markErr != nil {
-				m.log.Warn("events-pull: mark engagement applied", "send_id", snd.SendID, "event_id", res.ID, "err", markErr)
+			if listID != "" && isEngagementEvent(ev.Event) {
+				if engErr := m.store.ApplyEventToEngagement(ctx, contactID.String, listID, ev.Event, ev.EventTimestampMs); engErr != nil {
+					return inserted, pages, false, engErr
+				}
 			}
 		}
 		if page.Paging.Next == "" || page.Paging.Next == pageURL {
@@ -259,32 +260,19 @@ func (m *Manager) pullEventsForOneSendInternal(ctx context.Context, snd store.Du
 		}
 		pageURL = page.Paging.Next
 		if pages >= maxPagesPerSend {
-			// We're about to exit the loop with an outstanding next
-			// page — flag the caller so the watermark advance is
-			// conservative (Phase 5 fix for H2).
+			// Exiting with an outstanding next page — don't freeze even
+			// if we're past the window; the next beat continues paging.
 			cappedWithMorePages = true
 		}
 	}
 
-	// Watermark advance strategy:
-	//   * Normal exhaustion → advance to (endMs - OverlapMS). The 6h
-	//     overlap guarantees the next pull re-scans for late arrivals.
-	//   * Page-cap with more pages → advance only to lastEventTs (the
-	//     highest event we successfully processed). The next pull will
-	//     start at lastEventTs - OverlapMS and re-fetch the remaining
-	//     pages via the new begin/end window — UNIQUE deduplicates the
-	//     already-archived events.
-	//   * Page-cap but lastEventTs is somehow 0 (unusual: cap hit with
-	//     no events) → keep the existing watermark.
-	newThroughMs := endMs - OverlapMS
-	if cappedWithMorePages {
-		if lastEventTs > 0 {
-			newThroughMs = lastEventTs
-		} else if snd.EventsLastPulledThroughMs.Valid {
-			newThroughMs = snd.EventsLastPulledThroughMs.Int64
-		} else {
-			newThroughMs = snd.CreatedAtMs
-		}
+	// Watermark advance: to lastEventTs when we processed anything,
+	// otherwise hold at beginMs-1 (the through-point already covered) so
+	// an empty window doesn't skip the lower bound forward past unseen
+	// events.
+	newThroughMs := beginMs - 1
+	if lastEventTs > 0 {
+		newThroughMs = lastEventTs
 	}
 
 	frozen = !cappedWithMorePages && nowMs >= snd.CreatedAtMs+ArchiveMaxAgeMS
@@ -301,9 +289,7 @@ func (m *Manager) pullEventsForOneSendInternal(ctx context.Context, snd store.Du
 }
 
 // isEngagementEvent reports whether the event type drives an update to
-// the contact_engagement summary. Used to decide whether to mark
-// engagement_applied=1 directly (non-engagement event) vs. wait for the
-// apply step to succeed first.
+// the per-(contact, list) contact_engagement summary.
 func isEngagementEvent(eventType string) bool {
 	switch eventType {
 	case "delivered", "opened", "clicked":
@@ -313,55 +299,17 @@ func isEngagementEvent(eventType string) bool {
 	}
 }
 
-// replayUnappliedEngagement scans for raw events whose engagement update
-// never landed (insert succeeded but apply failed in a prior tick). For
-// each it looks up the list_id and re-runs ApplyEventToEngagement, then
-// flips engagement_applied=1. Bounded per tick so a backlog drains
-// gracefully without saturating the cron.
-//
-// Idempotency: ApplyEventToEngagement's UPSERT semantics with the MAX()
-// guards make double-application safe for last_*_at_ms columns, but
-// total_* counters would double-count if naively replayed. The flag
-// is what prevents that — we only replay events explicitly marked 0,
-// and we mark them 1 immediately after the apply call returns nil.
-func (m *Manager) replayUnappliedEngagement(ctx context.Context, limit int) {
-	events, err := m.store.ListUnappliedEngagementEvents(ctx, limit)
-	if err != nil {
-		m.log.Warn("events-pull: replay list", "err", err)
-		return
-	}
-	if len(events) == 0 {
-		return
-	}
-	for _, ev := range events {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if !ev.ContactID.Valid || !isEngagementEvent(ev.Event) {
-			if markErr := m.store.MarkEngagementApplied(ctx, ev.ID); markErr != nil {
-				m.log.Warn("events-pull: replay mark", "event_id", ev.ID, "err", markErr)
-			}
-			continue
-		}
-		listID, lookupErr := m.store.GetSendListID(ctx, ev.MgSendID)
-		if lookupErr != nil {
-			m.log.Warn("events-pull: replay list_id lookup", "event_id", ev.ID, "err", lookupErr)
-			continue
-		}
-		if listID == "" {
-			if markErr := m.store.MarkEngagementApplied(ctx, ev.ID); markErr != nil {
-				m.log.Warn("events-pull: replay mark", "event_id", ev.ID, "err", markErr)
-			}
-			continue
-		}
-		if engErr := m.store.ApplyEventToEngagement(ctx, ev.ContactID.String, listID, ev.Event, ev.EventTimestampMs); engErr != nil {
-			m.log.Warn("events-pull: replay apply", "event_id", ev.ID, "err", engErr)
-			continue
-		}
-		if markErr := m.store.MarkEngagementApplied(ctx, ev.ID); markErr != nil {
-			m.log.Warn("events-pull: replay mark", "event_id", ev.ID, "err", markErr)
-		}
+// isMessageEvent reports whether the event type updates the per-(send,
+// contact) message engagement row. Broader than isEngagementEvent (the
+// per-list rollup gate): cme also records acceptance, failure, complaint,
+// and unsubscribe so a single message's full lifecycle is queryable.
+func isMessageEvent(eventType string) bool {
+	switch eventType {
+	case "accepted", "delivered", "opened", "clicked", "failed", "rejected", "complained", "unsubscribed":
+		return true
+	default:
+		return false
 	}
 }
+
+

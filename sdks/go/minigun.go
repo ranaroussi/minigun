@@ -365,38 +365,30 @@ func (c *Client) ResumeSend(ctx context.Context, sendID string, force bool) (map
 	return c.post(ctx, path, map[string]any{})
 }
 
-// ListSendEventsArgs narrows what ListSendEvents returns.
-// Zero values mean "no filter."
-type ListSendEventsArgs struct {
-	SendID  string
-	Event   string // delivered | opened | clicked | failed | complained | unsubscribed
-	SinceMs int64  // lower bound on event_timestamp_ms
-	Limit   int    // page size (default 100, max 500)
-	Cursor  string // opaque keyset cursor from a previous page's next_cursor
+// ListSendRecipientsArgs narrows what ListSendRecipients returns.
+type ListSendRecipientsArgs struct {
+	SendID string
+	Limit  int    // page size (default 100, max 500)
+	Cursor string // opaque keyset cursor (last contact_id) from next_cursor
 }
 
-// ListSendEvents returns one page of archived Mailgun events for a
-// send. Requires EVENTS_ARCHIVE_ENABLED on the server. The response
-// shape is { items: [...], next_cursor?: string } — when next_cursor
-// is absent, the page is the last one.
-func (c *Client) ListSendEvents(ctx context.Context, a ListSendEventsArgs) (map[string]any, error) {
+// ListSendRecipients returns one page of per-recipient message
+// engagement for a send (one row per contact: sent/delivered timestamps,
+// first/last open + click with counts, failure/complaint/unsubscribe
+// state), keyset-paginated by contact_id. Requires EVENTS_ARCHIVE_ENABLED
+// on the server. Response shape is { items: [...], next_cursor?: string }.
+func (c *Client) ListSendRecipients(ctx context.Context, a ListSendRecipientsArgs) (map[string]any, error) {
 	if a.SendID == "" {
 		return nil, errors.New("minigun: SendID is required")
 	}
 	q := url.Values{}
-	if a.Event != "" {
-		q.Set("event", a.Event)
-	}
-	if a.SinceMs > 0 {
-		q.Set("since", fmt.Sprintf("%d", a.SinceMs))
-	}
 	if a.Limit > 0 {
 		q.Set("limit", fmt.Sprintf("%d", a.Limit))
 	}
 	if a.Cursor != "" {
 		q.Set("cursor", a.Cursor)
 	}
-	path := "/send/" + enc(a.SendID) + "/events"
+	path := "/send/" + enc(a.SendID) + "/recipients"
 	if enc := q.Encode(); enc != "" {
 		path += "?" + enc
 	}

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/ranaroussi/minigun/internal/db"
-	"github.com/ranaroussi/minigun/internal/mailgun"
 	"github.com/ranaroussi/minigun/internal/store"
 )
 
@@ -89,39 +88,25 @@ func seed(t *testing.T, db *sql.DB) seedIDs {
 	return ids
 }
 
-func TestInsertEventIfNew_Idempotency(t *testing.T) {
+func TestLookupContactIDByEmail(t *testing.T) {
 	st, d := newTestStore(t)
 	ids := seed(t, d)
 	ctx := context.Background()
 
-	ev, ok := store.NormalizeEvent(mailgun.RawEvent{
-		ID:        "mg_event_001",
-		Event:     "delivered",
-		Timestamp: float64(ids.CreatedAt.Unix()),
-		Recipient: ids.ContactEM,
-		Tags:      []string{ids.SendID},
-	}, ids.Domain, ids.SendID)
-	if !ok {
-		t.Fatal("normalize: expected ok")
-	}
-
-	first, err := st.InsertEventIfNew(ctx, ev)
+	got, err := st.LookupContactIDByEmail(ctx, ids.ContactEM)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.Inserted {
-		t.Fatal("expected first insert to be new")
-	}
-	if !first.ContactID.Valid || first.ContactID.String != ids.ContactID {
-		t.Fatalf("contact_id not resolved: got %+v", first.ContactID)
+	if !got.Valid || got.String != ids.ContactID {
+		t.Fatalf("resolved: want %s, got %+v", ids.ContactID, got)
 	}
 
-	second, err := st.InsertEventIfNew(ctx, ev)
+	missing, err := st.LookupContactIDByEmail(ctx, "nobody@nowhere.test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Inserted {
-		t.Fatal("expected second insert to be a dup (no-op)")
+	if missing.Valid {
+		t.Fatalf("unknown address should resolve to invalid NullString, got %+v", missing)
 	}
 }
 
@@ -195,111 +180,6 @@ func TestApplyEventToEngagement_OutOfOrderDoesntRewind(t *testing.T) {
 	}
 	if rows[0].TotalOpens != 2 {
 		t.Fatalf("total_opens: want 2 (both events counted), got %d", rows[0].TotalOpens)
-	}
-}
-
-func TestListSendEvents_PaginationAndFilter(t *testing.T) {
-	st, d := newTestStore(t)
-	ids := seed(t, d)
-	ctx := context.Background()
-
-	// Seed 5 events: 3 delivered, 2 opened, monotonically increasing ts.
-	baseMs := ids.CreatedAt.UnixMilli()
-	events := []struct {
-		id    string
-		event string
-		ts    int64
-	}{
-		{"mg_e1", "delivered", baseMs + 1000},
-		{"mg_e2", "delivered", baseMs + 2000},
-		{"mg_e3", "opened", baseMs + 3000},
-		{"mg_e4", "delivered", baseMs + 4000},
-		{"mg_e5", "opened", baseMs + 5000},
-	}
-	for _, e := range events {
-		ev, ok := store.NormalizeEvent(mailgun.RawEvent{
-			ID:        e.id,
-			Event:     e.event,
-			Timestamp: float64(e.ts) / 1000.0,
-			Recipient: ids.ContactEM,
-			Tags:      []string{ids.SendID},
-		}, ids.Domain, ids.SendID)
-		if !ok {
-			t.Fatal("normalize")
-		}
-		if _, err := st.InsertEventIfNew(ctx, ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// Full listing — should return 5 in chronological order.
-	all, err := st.ListSendEvents(ctx, store.ListSendEventsParams{
-		SendID: ids.SendID,
-		Limit:  10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != 5 {
-		t.Fatalf("want 5 events, got %d", len(all))
-	}
-	for i := 1; i < len(all); i++ {
-		if all[i].EventTimestampMs < all[i-1].EventTimestampMs {
-			t.Fatalf("events out of order at %d", i)
-		}
-	}
-
-	// Event filter.
-	opens, err := st.ListSendEvents(ctx, store.ListSendEventsParams{
-		SendID:    ids.SendID,
-		EventType: "opened",
-		Limit:     10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(opens) != 2 {
-		t.Fatalf("want 2 opens, got %d", len(opens))
-	}
-
-	// Pagination — limit 2 should yield first 2.
-	page1, err := st.ListSendEvents(ctx, store.ListSendEventsParams{
-		SendID: ids.SendID,
-		Limit:  2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page1) != 2 {
-		t.Fatalf("page1: want 2, got %d", len(page1))
-	}
-	page2, err := st.ListSendEvents(ctx, store.ListSendEventsParams{
-		SendID:    ids.SendID,
-		AfterTsMs: page1[1].EventTimestampMs,
-		AfterID:   page1[1].ID,
-		Limit:     10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(page2) != 3 {
-		t.Fatalf("page2: want 3, got %d", len(page2))
-	}
-	if page2[0].MailgunEventID == page1[1].MailgunEventID {
-		t.Fatal("page2 must not include the cursor boundary row")
-	}
-
-	// SinceMs filter.
-	since, err := st.ListSendEvents(ctx, store.ListSendEventsParams{
-		SendID:  ids.SendID,
-		SinceMs: baseMs + 3500,
-		Limit:   10,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(since) != 2 {
-		t.Fatalf("since: want 2, got %d", len(since))
 	}
 }
 
@@ -385,57 +265,6 @@ func TestApplyEventToEngagement_DeliveredOutOfOrderDoesntInflateDormancy(t *test
 	}
 	if final[0].MessagesSinceLastEngagement != 1 {
 		t.Fatalf("msgs_since_eng after fresh delivered: want 1, got %d", final[0].MessagesSinceLastEngagement)
-	}
-}
-
-// M6: events insert with engagement_applied = 0; MarkEngagementApplied
-// flips to 1; ListUnappliedEngagementEvents returns only un-applied rows.
-// The replay scanner relies on this contract.
-func TestEngagementAppliedFlag_RoundTrip(t *testing.T) {
-	st, d := newTestStore(t)
-	ids := seed(t, d)
-	ctx := context.Background()
-
-	ev, ok := store.NormalizeEvent(mailgun.RawEvent{
-		ID:        "mg_e_phase5_1",
-		Event:     "delivered",
-		Timestamp: float64(ids.CreatedAt.Unix() + 10),
-		Recipient: ids.ContactEM,
-		Tags:      []string{ids.SendID},
-	}, ids.Domain, ids.SendID)
-	if !ok {
-		t.Fatal("normalize")
-	}
-	res, err := st.InsertEventIfNew(ctx, ev)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Inserted || res.ID == "" {
-		t.Fatalf("insert: want Inserted=true with non-empty ID, got %+v", res)
-	}
-
-	// Brand-new row should appear in the un-applied queue.
-	pending, err := st.ListUnappliedEngagementEvents(ctx, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("pending: want 1, got %d", len(pending))
-	}
-	if pending[0].ID != res.ID {
-		t.Fatalf("pending id mismatch: want %s, got %s", res.ID, pending[0].ID)
-	}
-
-	// Marking it applied removes it from the queue.
-	if err := st.MarkEngagementApplied(ctx, res.ID); err != nil {
-		t.Fatal(err)
-	}
-	pending, err = st.ListUnappliedEngagementEvents(ctx, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("pending after mark: want 0, got %d", len(pending))
 	}
 }
 
@@ -563,6 +392,141 @@ func TestPruneList_AtomicUnsubscribeAndAudit(t *testing.T) {
 	if again.Candidates != 0 || again.Unsubscribed != 0 {
 		t.Fatalf("re-run: want 0/0, got %d/%d", again.Candidates, again.Unsubscribed)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6: per-(send, contact) message engagement
+// ---------------------------------------------------------------------------
+
+// A message's full lifecycle (accepted → delivered → open×2 → click →
+// failed) folds into one cme row with idempotent timestamps + exact
+// counts. Timestamps are epoch SECONDS.
+func TestApplyEventToMessageEngagement_Lifecycle(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+	listNS := sql.NullString{String: ids.ListID, Valid: true}
+	base := ids.CreatedAt.Unix()
+
+	apply := func(event string, tsSec int64, sev, reason string) {
+		t.Helper()
+		if err := st.ApplyEventToMessageEngagement(ctx, ids.SendID, ids.ContactID, listNS, event, tsSec, optNS(sev), optNS(reason)); err != nil {
+			t.Fatalf("apply %s: %v", event, err)
+		}
+	}
+	apply("accepted", base+1, "", "")
+	apply("delivered", base+2, "", "")
+	apply("opened", base+10, "", "")
+	apply("opened", base+20, "", "")
+	apply("clicked", base+30, "", "")
+	apply("failed", base+40, "temporary", "greylisted")
+
+	rows, err := st.ListSendRecipients(ctx, store.ListSendRecipientsParams{SendID: ids.SendID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 recipient row, got %d", len(rows))
+	}
+	r := rows[0]
+	if r.SentAt.Int64 != base+1 || r.DeliveredAt.Int64 != base+2 {
+		t.Fatalf("sent/delivered: got %d/%d", r.SentAt.Int64, r.DeliveredAt.Int64)
+	}
+	if r.FirstOpenAt.Int64 != base+10 || r.LastOpenAt.Int64 != base+20 || r.TotalOpens != 2 {
+		t.Fatalf("opens: first=%d last=%d total=%d", r.FirstOpenAt.Int64, r.LastOpenAt.Int64, r.TotalOpens)
+	}
+	if r.FirstClickAt.Int64 != base+30 || r.TotalClicks != 1 {
+		t.Fatalf("clicks: first=%d total=%d", r.FirstClickAt.Int64, r.TotalClicks)
+	}
+	if r.Failed != 1 || r.FailedAt.Int64 != base+40 || r.FailureSeverity.String != "temporary" || r.FailureReason.String != "greylisted" {
+		t.Fatalf("failure: %+v", r)
+	}
+}
+
+// Out-of-order opens converge: first_open_at stays earliest, last_open_at
+// stays latest regardless of arrival order.
+func TestApplyEventToMessageEngagement_OutOfOrderConverges(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+	listNS := sql.NullString{String: ids.ListID, Valid: true}
+	base := ids.CreatedAt.Unix()
+
+	// Later open first, then earlier open.
+	if err := st.ApplyEventToMessageEngagement(ctx, ids.SendID, ids.ContactID, listNS, "opened", base+100, sql.NullString{}, sql.NullString{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyEventToMessageEngagement(ctx, ids.SendID, ids.ContactID, listNS, "opened", base+10, sql.NullString{}, sql.NullString{}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ListSendRecipients(ctx, store.ListSendRecipientsParams{SendID: ids.SendID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rows[0]
+	if r.FirstOpenAt.Int64 != base+10 {
+		t.Fatalf("first_open_at: want %d, got %d", base+10, r.FirstOpenAt.Int64)
+	}
+	if r.LastOpenAt.Int64 != base+100 {
+		t.Fatalf("last_open_at: want %d, got %d", base+100, r.LastOpenAt.Int64)
+	}
+	if r.TotalOpens != 2 {
+		t.Fatalf("total_opens: want 2, got %d", r.TotalOpens)
+	}
+}
+
+// ListSendRecipients keyset-paginates by contact_id.
+func TestListSendRecipients_Pagination(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+	listNS := sql.NullString{String: ids.ListID, Valid: true}
+	base := ids.CreatedAt.Unix()
+
+	// Add two more contacts so the send has three recipients.
+	for _, cid := range []string{"c_aaa0000001", "c_bbb0000002"} {
+		if _, err := d.ExecContext(ctx, `
+			INSERT INTO contacts (id, email, params, created_at, updated_at)
+			VALUES (?, ?, '{}', datetime('now'), datetime('now'))`,
+			cid, cid+"@example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.ApplyEventToMessageEngagement(ctx, ids.SendID, cid, listNS, "delivered", base+1, sql.NullString{}, sql.NullString{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.ApplyEventToMessageEngagement(ctx, ids.SendID, ids.ContactID, listNS, "delivered", base+1, sql.NullString{}, sql.NullString{}); err != nil {
+		t.Fatal(err)
+	}
+
+	page1, err := st.ListSendRecipients(ctx, store.ListSendRecipientsParams{SendID: ids.SendID, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page1: want 2, got %d", len(page1))
+	}
+	page2, err := st.ListSendRecipients(ctx, store.ListSendRecipientsParams{
+		SendID:         ids.SendID,
+		AfterContactID: page1[1].ContactID,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2) != 1 {
+		t.Fatalf("page2: want 1, got %d", len(page2))
+	}
+	if page2[0].ContactID <= page1[1].ContactID {
+		t.Fatalf("keyset broken: page2 %s not after page1 %s", page2[0].ContactID, page1[1].ContactID)
+	}
+}
+
+func optNS(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
 }
 
 // worker_state KV helpers — round-trip a key/value, including the

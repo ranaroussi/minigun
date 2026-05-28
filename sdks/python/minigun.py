@@ -294,35 +294,29 @@ class Minigun:
             path += "?force=1"
         return self._post(path, {})
 
-    def list_send_events(
+    def list_send_recipients(
         self,
         send_id: str,
-        event: Optional[str] = None,
-        since_ms: Optional[int] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
     ) -> dict:
-        """One page of archived Mailgun events for a send. Requires
+        """One page of per-recipient message engagement for a send (one
+        row per contact: sent/delivered timestamps, first/last open + click
+        with counts, failure/complaint/unsubscribe state). Requires
         EVENTS_ARCHIVE_ENABLED on the server.
 
-        Returns {"items": [...], "next_cursor"?: str}. When next_cursor
-        is absent, the page is the last one.
+        Returns {"items": [...], "next_cursor"?: str}. Keyset paginated by
+        contact_id.
 
-        - event:    filter by event type (delivered/opened/clicked/...)
-        - since_ms: lower bound on event_timestamp_ms
-        - limit:    page size (default 100, max 500)
-        - cursor:   opaque keyset cursor from a previous page's next_cursor
+        - limit:  page size (default 100, max 500)
+        - cursor: opaque cursor from a previous page's next_cursor
         """
         params = []
-        if event:
-            params.append(f"event={_q(event)}")
-        if since_ms and since_ms > 0:
-            params.append(f"since={since_ms}")
-        if limit and limit > 0:
+        if limit:
             params.append(f"limit={limit}")
         if cursor:
             params.append(f"cursor={_q(cursor)}")
-        path = f"/send/{_q(send_id)}/events"
+        path = f"/send/{_q(send_id)}/recipients"
         if params:
             path += "?" + "&".join(params)
         return self._get(path)

@@ -3,12 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
-	"github.com/ranaroussi/minigun/internal/ids"
 	"github.com/ranaroussi/minigun/internal/mailgun"
 )
 
@@ -24,30 +22,29 @@ type DueEventPullRow struct {
 	EventsLastPulledThroughMs    sql.NullInt64
 }
 
-// MailgunEvent is the canonical row shape exposed for query endpoints
-// (Phase 3) — kept narrower than the full table so the wire shape stays
-// stable as we add columns.
-type MailgunEvent struct {
-	ID                string
-	Domain            string
-	MailgunEventID    string
-	Event             string
-	Severity          *string
-	Recipient         string
-	RecipientDomain   string
-	EventTimestampMs  int64
-	EventTimestampISO string
-	MessageID         *string
-	MgSendID          string
-	ContactID         *string
-	URL               *string
-	Reason            *string
-	Tags              *string
-	ClientInfo        *string
-	Geolocation       *string
-	UserVariables     *string
-	RawPayload        string
-	CreatedAt         time.Time
+// MessageEngagement mirrors a row of contact_message_engagement — the
+// per-(send, contact) message detail tier (Phase 6). Timestamps are
+// epoch SECONDS (see migration 00010 for the unit-split rationale).
+type MessageEngagement struct {
+	SendID          string
+	ContactID       string
+	ListID          sql.NullString
+	SentAt          sql.NullInt64
+	DeliveredAt     sql.NullInt64
+	FirstOpenAt     sql.NullInt64
+	LastOpenAt      sql.NullInt64
+	TotalOpens      int64
+	FirstClickAt    sql.NullInt64
+	LastClickAt     sql.NullInt64
+	TotalClicks     int64
+	Failed          int64
+	FailedAt        sql.NullInt64
+	FailureSeverity sql.NullString
+	FailureReason   sql.NullString
+	ComplainedAt    sql.NullInt64
+	UnsubscribedAt  sql.NullInt64
+	RepliedAt       sql.NullInt64
+	UpdatedAt       int64
 }
 
 // ContactEngagement mirrors the row in contact_engagement. Used by both
@@ -202,222 +199,56 @@ func (s *Store) GetSendListID(ctx context.Context, sendID string) (string, error
 // Event ingestion
 // ---------------------------------------------------------------------------
 
-// NormalizedEvent is the cleaned, per-event payload ready to insert into
-// mailgun_events. Decoupled from mailgun.RawEvent so persistence doesn't
-// see the wire-format variability.
+// NormalizedEvent is the cleaned, per-event payload the pull loop folds
+// directly into the two engagement rollups. There is no raw event ledger,
+// so this is never persisted — it's a transient carrier between
+// NormalizeEvent and the Apply* methods, carrying only the fields the
+// rollups consume.
 type NormalizedEvent struct {
-	Domain            string
-	MailgunEventID    string
-	Event             string
-	Severity          sql.NullString
-	Recipient         string
-	RecipientDomain   string
-	EventTimestampMs  int64
-	EventTimestampISO string
-	MessageID         sql.NullString
-	MgSendID          string
-	URL               sql.NullString
-	Reason            sql.NullString
-	Tags              sql.NullString
-	ClientInfo        sql.NullString
-	Geolocation       sql.NullString
-	UserVariables     sql.NullString
-	RawPayload        string
+	Event            string
+	Severity         sql.NullString
+	Recipient        string
+	EventTimestampMs int64
+	Reason           sql.NullString
 }
 
-// NormalizeEvent converts a raw Mailgun event into the persisted shape.
+// NormalizeEvent converts a raw Mailgun event into the rollup-ready shape.
 // Returns (nil, false) for events lacking the bare minimum identifiers
 // (id, event, timestamp, recipient) so the pull loop can defensively skip
 // malformed events without aborting the batch.
-func NormalizeEvent(raw mailgun.RawEvent, domain, sendID string) (*NormalizedEvent, bool) {
+func NormalizeEvent(raw mailgun.RawEvent) (*NormalizedEvent, bool) {
 	if raw.ID == "" || raw.Event == "" || raw.Recipient == "" {
 		return nil, false
 	}
 	if raw.Timestamp == 0 {
 		return nil, false
 	}
-	recipient := strings.ToLower(raw.Recipient)
-	atIdx := strings.LastIndex(recipient, "@")
-	recipientDomain := ""
-	if atIdx >= 0 {
-		recipientDomain = recipient[atIdx+1:]
-	}
-	tsMs := int64(raw.Timestamp * 1000)
-	ev := &NormalizedEvent{
-		Domain:            domain,
-		MailgunEventID:    raw.ID,
-		Event:             raw.Event,
-		Severity:          optString(raw.Severity),
-		Recipient:         recipient,
-		RecipientDomain:   recipientDomain,
-		EventTimestampMs:  tsMs,
-		EventTimestampISO: time.UnixMilli(tsMs).UTC().Format(time.RFC3339Nano),
-		MgSendID:          sendID,
-		URL:               optString(raw.URL),
-		Reason:            optString(raw.Reason),
-	}
-	// Extract message-id from raw.Message.headers["message-id"] if present.
-	if len(raw.Message) > 0 {
-		var msg struct {
-			Headers map[string]any `json:"headers"`
-		}
-		if err := json.Unmarshal(raw.Message, &msg); err == nil {
-			if mid, ok := msg.Headers["message-id"].(string); ok && mid != "" {
-				ev.MessageID = sql.NullString{String: mid, Valid: true}
-			}
-		}
-	}
-	if len(raw.Tags) > 0 {
-		if j, err := json.Marshal(raw.Tags); err == nil {
-			ev.Tags = sql.NullString{String: string(j), Valid: true}
-		}
-	}
-	if len(raw.ClientInfo) > 0 {
-		ev.ClientInfo = sql.NullString{String: string(raw.ClientInfo), Valid: true}
-	}
-	if len(raw.Geolocation) > 0 {
-		ev.Geolocation = sql.NullString{String: string(raw.Geolocation), Valid: true}
-	}
-	if len(raw.UserVars) > 0 {
-		ev.UserVariables = sql.NullString{String: string(raw.UserVars), Valid: true}
-	}
-	if len(raw.Raw) > 0 {
-		ev.RawPayload = string(raw.Raw)
-	} else {
-		// Defensive: if FetchEvents didn't populate Raw (shouldn't happen),
-		// re-marshal so the column is never empty.
-		if j, err := json.Marshal(raw); err == nil {
-			ev.RawPayload = string(j)
-		}
-	}
-	return ev, true
+	return &NormalizedEvent{
+		Event:            raw.Event,
+		Severity:         optString(raw.Severity),
+		Recipient:        strings.ToLower(raw.Recipient),
+		EventTimestampMs: int64(raw.Timestamp * 1000),
+		Reason:           optString(raw.Reason),
+	}, true
 }
 
-// InsertEventResult mirrors the TS side: was the row new, what id we
-// assigned to it (only set when Inserted=true), and what contact_id the
-// email resolved to.
-type InsertEventResult struct {
-	Inserted  bool
-	ID        string
-	ContactID sql.NullString
-}
-
-// InsertEventIfNew inserts one normalized event with INSERT OR IGNORE.
-// Returns Inserted=true if a row was actually written (and the resolved
-// ContactID if any), Inserted=false if the UNIQUE constraint on
-// mailgun_event_id rejected a duplicate.
-//
-// This is the entire idempotency contract for the events archive: the
-// 6h overlap window we re-fetch on every pull will re-present events
-// we've already archived, and this function makes that a no-op.
-func (s *Store) InsertEventIfNew(ctx context.Context, ev *NormalizedEvent) (*InsertEventResult, error) {
-	id := ids.NewMailgunEvent()
-	now := nowISO()
-	// New events start at engagement_applied = 0. The caller flips it to
-	// 1 only after ApplyEventToEngagement completes (via
-	// MarkEngagementApplied). If the apply step crashes or fails, the
-	// row stays at 0 and ReplayUnappliedEngagement reconciles it on the
-	// next pull tick. This is the Phase 5 fix for the "insert succeeded
-	// but engagement update failed → permanent drift" risk in Phase 2.
-	res, err := s.DB.ExecContext(ctx, `
-		INSERT OR IGNORE INTO mailgun_events
-		  (id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
-		   event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
-		   url, reason, tags, client_info, geolocation, user_variables, raw_payload,
-		   engagement_applied, created_at)
-		VALUES (
-		  ?, ?, ?, ?, ?, ?, ?,
-		  ?, ?, ?, ?,
-		  (SELECT id FROM contacts WHERE email = ? LIMIT 1),
-		  ?, ?, ?, ?, ?, ?, ?, 0, ?
-		)`,
-		id,
-		ev.Domain,
-		ev.MailgunEventID,
-		ev.Event,
-		ev.Severity,
-		ev.Recipient,
-		ev.RecipientDomain,
-		ev.EventTimestampMs,
-		ev.EventTimestampISO,
-		ev.MessageID,
-		ev.MgSendID,
-		ev.Recipient,
-		ev.URL,
-		ev.Reason,
-		ev.Tags,
-		ev.ClientInfo,
-		ev.Geolocation,
-		ev.UserVariables,
-		ev.RawPayload,
-		now,
-	)
+// LookupContactIDByEmail resolves a recipient email to its contact_id.
+// Returns an invalid sql.NullString (not an error) when no contact
+// matches — Mailgun can report events for addresses we never stored
+// (e.g. forwarded mail), and those simply don't move any rollup.
+func (s *Store) LookupContactIDByEmail(ctx context.Context, email string) (sql.NullString, error) {
+	var id sql.NullString
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT id FROM contacts WHERE email = ? LIMIT 1`,
+		strings.ToLower(email),
+	).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sql.NullString{}, nil
+	}
 	if err != nil {
-		return nil, err
+		return sql.NullString{}, err
 	}
-	affected, _ := res.RowsAffected()
-	if affected == 0 {
-		return &InsertEventResult{Inserted: false, ID: ""}, nil
-	}
-	// Look up the contact_id stamped onto the row we just inserted.
-	var contactID sql.NullString
-	if err := s.DB.QueryRowContext(ctx, `SELECT contact_id FROM mailgun_events WHERE id = ?`, id).Scan(&contactID); err != nil {
-		// We just inserted — this shouldn't fail, but if it does, treat
-		// it as "inserted but contact unresolved" rather than as an error.
-		return &InsertEventResult{Inserted: true, ID: id}, nil
-	}
-	return &InsertEventResult{Inserted: true, ID: id, ContactID: contactID}, nil
-}
-
-// MarkEngagementApplied flips mailgun_events.engagement_applied to 1 for
-// one event. Called by the pull loop after a successful
-// ApplyEventToEngagement (or immediately for events that don't update
-// engagement). Idempotent.
-func (s *Store) MarkEngagementApplied(ctx context.Context, eventID string) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE mailgun_events SET engagement_applied = 1 WHERE id = ?`, eventID)
-	return err
-}
-
-// UnappliedEngagementEvent is one row from ListUnappliedEngagementEvents.
-type UnappliedEngagementEvent struct {
-	ID               string
-	MgSendID         string
-	ContactID        sql.NullString
-	Event            string
-	EventTimestampMs int64
-}
-
-// ListUnappliedEngagementEvents returns up to `limit` raw events that
-// were ingested but never had their engagement summary updated. Bounded
-// + ordered by event_timestamp_ms ASC so replay applies events in the
-// same order they originally arrived. The partial index
-// idx_mailgun_events_unapplied makes this scan cheap when the pending
-// set is small (the typical case).
-func (s *Store) ListUnappliedEngagementEvents(ctx context.Context, limit int) ([]UnappliedEngagementEvent, error) {
-	if limit <= 0 {
-		limit = 500
-	}
-	rows, err := s.DB.QueryContext(ctx, `
-		SELECT id, mg_send_id, contact_id, event, event_timestamp_ms
-		FROM mailgun_events
-		WHERE engagement_applied = 0
-		ORDER BY event_timestamp_ms ASC
-		LIMIT ?`,
-		limit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []UnappliedEngagementEvent
-	for rows.Next() {
-		var r UnappliedEngagementEvent
-		if err := rows.Scan(&r.ID, &r.MgSendID, &r.ContactID, &r.Event, &r.EventTimestampMs); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return id, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -425,9 +256,10 @@ func (s *Store) ListUnappliedEngagementEvents(ctx context.Context, limit int) ([
 // ---------------------------------------------------------------------------
 
 // ApplyEventToEngagement applies one event to the per-(contact, list)
-// engagement summary. Only called when InsertEventIfNew actually inserted
-// (the entire idempotency contract relies on this being downstream of a
-// successful UNIQUE-constrained insert).
+// engagement summary. Counters increment per call, so the pull loop must
+// only call this once per event — which the incremental watermark
+// guarantees: each pull begins strictly after the highest event
+// timestamp the previous pull processed, so no event is seen twice.
 //
 // Semantics — see the proposal doc:
 //   delivered → bump total_delivered + messages_since_last_engagement
@@ -499,98 +331,148 @@ func (s *Store) ApplyEventToEngagement(ctx context.Context, contactID, listID, e
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Read endpoints (Phase 3)
-// ---------------------------------------------------------------------------
-
-// ListSendEventsParams narrows what ListSendEvents returns.
-// AfterTsMs + AfterID together form the keyset cursor — the next page
-// starts strictly after (AfterTsMs, AfterID). Limit is clamped by the
-// caller (see api/events.go).
-type ListSendEventsParams struct {
-	SendID    string
-	EventType string // "" = all; otherwise filters mailgun_events.event
-	SinceMs   int64  // 0 = no lower bound
-	AfterTsMs int64  // 0 = first page
-	AfterID   string // "" = first page
-	Limit     int
+// ApplyEventToMessageEngagement applies one event to the per-(send,
+// contact) detail row in contact_message_engagement. eventTsSec is epoch
+// SECONDS (the caller converts from the ledger's ms). listID may be NULL
+// for list-less singles. severity/reason are only consulted for failures.
+//
+// Counters increment per call; the incremental watermark (each pull
+// begins strictly after the previous pull's highest event timestamp)
+// ensures each event is applied exactly once. Timestamp fields use
+// MIN/MAX so out-of-order arrival within a single pull converges.
+func (s *Store) ApplyEventToMessageEngagement(ctx context.Context, sendID, contactID string, listID sql.NullString, eventType string, eventTsSec int64, severity, reason sql.NullString) error {
+	now := time.Now().Unix()
+	switch eventType {
+	case "accepted":
+		_, err := s.DB.ExecContext(ctx, `
+			INSERT INTO contact_message_engagement (send_id, contact_id, list_id, sent_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(send_id, contact_id) DO UPDATE SET
+			  sent_at    = MIN(COALESCE(sent_at, excluded.sent_at), excluded.sent_at),
+			  updated_at = excluded.updated_at`,
+			sendID, contactID, listID, eventTsSec, now)
+		return err
+	case "delivered":
+		_, err := s.DB.ExecContext(ctx, `
+			INSERT INTO contact_message_engagement (send_id, contact_id, list_id, delivered_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(send_id, contact_id) DO UPDATE SET
+			  delivered_at = MIN(COALESCE(delivered_at, excluded.delivered_at), excluded.delivered_at),
+			  updated_at   = excluded.updated_at`,
+			sendID, contactID, listID, eventTsSec, now)
+		return err
+	case "opened":
+		_, err := s.DB.ExecContext(ctx, `
+			INSERT INTO contact_message_engagement (send_id, contact_id, list_id, first_open_at, last_open_at, total_opens, updated_at)
+			VALUES (?, ?, ?, ?, ?, 1, ?)
+			ON CONFLICT(send_id, contact_id) DO UPDATE SET
+			  first_open_at = MIN(COALESCE(first_open_at, excluded.first_open_at), excluded.first_open_at),
+			  last_open_at  = MAX(COALESCE(last_open_at, 0), excluded.last_open_at),
+			  total_opens   = total_opens + 1,
+			  updated_at    = excluded.updated_at`,
+			sendID, contactID, listID, eventTsSec, eventTsSec, now)
+		return err
+	case "clicked":
+		_, err := s.DB.ExecContext(ctx, `
+			INSERT INTO contact_message_engagement (send_id, contact_id, list_id, first_click_at, last_click_at, total_clicks, updated_at)
+			VALUES (?, ?, ?, ?, ?, 1, ?)
+			ON CONFLICT(send_id, contact_id) DO UPDATE SET
+			  first_click_at = MIN(COALESCE(first_click_at, excluded.first_click_at), excluded.first_click_at),
+			  last_click_at  = MAX(COALESCE(last_click_at, 0), excluded.last_click_at),
+			  total_clicks   = total_clicks + 1,
+			  updated_at     = excluded.updated_at`,
+			sendID, contactID, listID, eventTsSec, eventTsSec, now)
+		return err
+	case "failed", "rejected":
+		_, err := s.DB.ExecContext(ctx, `
+			INSERT INTO contact_message_engagement (send_id, contact_id, list_id, failed, failed_at, failure_severity, failure_reason, updated_at)
+			VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+			ON CONFLICT(send_id, contact_id) DO UPDATE SET
+			  failed           = 1,
+			  failed_at        = MAX(COALESCE(failed_at, 0), excluded.failed_at),
+			  failure_severity = excluded.failure_severity,
+			  failure_reason   = excluded.failure_reason,
+			  updated_at       = excluded.updated_at`,
+			sendID, contactID, listID, eventTsSec, severity, reason, now)
+		return err
+	case "complained":
+		_, err := s.DB.ExecContext(ctx, `
+			INSERT INTO contact_message_engagement (send_id, contact_id, list_id, complained_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(send_id, contact_id) DO UPDATE SET
+			  complained_at = MAX(COALESCE(complained_at, 0), excluded.complained_at),
+			  updated_at    = excluded.updated_at`,
+			sendID, contactID, listID, eventTsSec, now)
+		return err
+	case "unsubscribed":
+		_, err := s.DB.ExecContext(ctx, `
+			INSERT INTO contact_message_engagement (send_id, contact_id, list_id, unsubscribed_at, updated_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(send_id, contact_id) DO UPDATE SET
+			  unsubscribed_at = MAX(COALESCE(unsubscribed_at, 0), excluded.unsubscribed_at),
+			  updated_at      = excluded.updated_at`,
+			sendID, contactID, listID, eventTsSec, now)
+		return err
+	default:
+		return nil
+	}
 }
 
-// ListSendEvents returns one page of events for a send, ordered ASC by
-// (event_timestamp_ms, id). The ASC order keeps the analytical-replay
-// use case natural: "show me how this send unfolded." The keyset cursor
-// is stable across inserts because mailgun_event_id (and hence id) is
-// monotonic per (send, ms) — newly arrived late events for older windows
-// would fall before the current cursor and the client wouldn't see them
-// on subsequent pages. That's acceptable for the archive's purpose
-// (forensic replay); for "find late-arriving opens" use SinceMs instead.
-func (s *Store) ListSendEvents(ctx context.Context, p ListSendEventsParams) ([]MailgunEvent, error) {
+// ---------------------------------------------------------------------------
+// Read endpoints
+// ---------------------------------------------------------------------------
+
+// ListSendRecipientsParams narrows ListSendRecipients. AfterContactID is
+// the keyset cursor (contact_id is the stable per-send ordering key).
+type ListSendRecipientsParams struct {
+	SendID         string
+	AfterContactID string
+	Limit          int
+}
+
+// ListSendRecipients returns one page of per-recipient message
+// engagement rows for a send, ordered by contact_id ASC. Keyset
+// paginated on contact_id (unique within a send via the composite PK).
+func (s *Store) ListSendRecipients(ctx context.Context, p ListSendRecipientsParams) ([]MessageEngagement, error) {
 	limit := p.Limit
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	// Build the WHERE clause dynamically — keeping the parameterized
-	// form close to the SQL so future maintainers can read both at once.
-	clauses := []string{"mg_send_id = ?"}
+	clauses := []string{"send_id = ?"}
 	args := []any{p.SendID}
-	if p.EventType != "" {
-		clauses = append(clauses, "event = ?")
-		args = append(args, p.EventType)
-	}
-	if p.SinceMs > 0 {
-		clauses = append(clauses, "event_timestamp_ms >= ?")
-		args = append(args, p.SinceMs)
-	}
-	if p.AfterTsMs > 0 || p.AfterID != "" {
-		// Keyset pagination on (event_timestamp_ms, id). The OR form is
-		// the canonical cursor predicate for compound-key ordering; SQLite
-		// can evaluate it efficiently when the underlying index covers
-		// (mg_send_id, event_timestamp_ms).
-		clauses = append(clauses, "(event_timestamp_ms > ? OR (event_timestamp_ms = ? AND id > ?))")
-		args = append(args, p.AfterTsMs, p.AfterTsMs, p.AfterID)
+	if p.AfterContactID != "" {
+		clauses = append(clauses, "contact_id > ?")
+		args = append(args, p.AfterContactID)
 	}
 	args = append(args, limit)
 	query := `
-		SELECT id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
-		       event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
-		       url, reason, tags, client_info, geolocation, user_variables, raw_payload, created_at
-		FROM mailgun_events
+		SELECT send_id, contact_id, list_id, sent_at, delivered_at,
+		       first_open_at, last_open_at, total_opens,
+		       first_click_at, last_click_at, total_clicks,
+		       failed, failed_at, failure_severity, failure_reason,
+		       complained_at, unsubscribed_at, replied_at, updated_at
+		FROM contact_message_engagement
 		WHERE ` + strings.Join(clauses, " AND ") + `
-		ORDER BY event_timestamp_ms ASC, id ASC
+		ORDER BY contact_id ASC
 		LIMIT ?`
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []MailgunEvent
+	var out []MessageEngagement
 	for rows.Next() {
-		var ev MailgunEvent
-		var severity, messageID, contactID, url, reason, tags, clientInfo, geo, userVars sql.NullString
-		var createdAt string
+		var m MessageEngagement
 		if err := rows.Scan(
-			&ev.ID, &ev.Domain, &ev.MailgunEventID, &ev.Event, &severity,
-			&ev.Recipient, &ev.RecipientDomain,
-			&ev.EventTimestampMs, &ev.EventTimestampISO,
-			&messageID, &ev.MgSendID, &contactID,
-			&url, &reason, &tags, &clientInfo, &geo, &userVars,
-			&ev.RawPayload, &createdAt,
+			&m.SendID, &m.ContactID, &m.ListID, &m.SentAt, &m.DeliveredAt,
+			&m.FirstOpenAt, &m.LastOpenAt, &m.TotalOpens,
+			&m.FirstClickAt, &m.LastClickAt, &m.TotalClicks,
+			&m.Failed, &m.FailedAt, &m.FailureSeverity, &m.FailureReason,
+			&m.ComplainedAt, &m.UnsubscribedAt, &m.RepliedAt, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
-		ev.Severity = stringPtr(severity)
-		ev.MessageID = stringPtr(messageID)
-		ev.ContactID = stringPtr(contactID)
-		ev.URL = stringPtr(url)
-		ev.Reason = stringPtr(reason)
-		ev.Tags = stringPtr(tags)
-		ev.ClientInfo = stringPtr(clientInfo)
-		ev.Geolocation = stringPtr(geo)
-		ev.UserVariables = stringPtr(userVars)
-		if ev.CreatedAt, err = parseTime(createdAt); err != nil {
-			return nil, err
-		}
-		out = append(out, ev)
+		out = append(out, m)
 	}
 	return out, rows.Err()
 }

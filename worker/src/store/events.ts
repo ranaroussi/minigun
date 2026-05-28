@@ -1,4 +1,3 @@
-import { newMailgunEvent } from '../lib/ids';
 import { MailgunEventRaw } from '../lib/mailgun';
 import { nowISO } from './types';
 
@@ -18,29 +17,28 @@ export type DueEventPullRow = {
   events_last_pulled_through_ms: number | null;
 };
 
-// Subset of mailgun_events used for query endpoints in Phase 3. Kept narrow
-// so the wire shape is stable as we add columns to the table.
-export type MailgunEvent = {
-  id: string;
-  domain: string;
-  mailgun_event_id: string;
-  event: string;
-  severity: string | null;
-  recipient: string;
-  recipient_domain: string;
-  event_timestamp_ms: number;
-  event_timestamp_iso: string;
-  message_id: string | null;
-  mg_send_id: string;
-  contact_id: string | null;
-  url: string | null;
-  reason: string | null;
-  tags: string | null;
-  client_info: string | null;
-  geolocation: string | null;
-  user_variables: string | null;
-  raw_payload: string;
-  created_at: string;
+// A row of contact_message_engagement — per-(send, contact) message
+// detail (Phase 6). Timestamps are epoch SECONDS.
+export type MessageEngagement = {
+  send_id: string;
+  contact_id: string;
+  list_id: string | null;
+  sent_at: number | null;
+  delivered_at: number | null;
+  first_open_at: number | null;
+  last_open_at: number | null;
+  total_opens: number;
+  first_click_at: number | null;
+  last_click_at: number | null;
+  total_clicks: number;
+  failed: number;
+  failed_at: number | null;
+  failure_severity: string | null;
+  failure_reason: string | null;
+  complained_at: number | null;
+  unsubscribed_at: number | null;
+  replied_at: number | null;
+  updated_at: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -145,187 +143,48 @@ export async function recordEventPullError(
 // Event ingestion
 // ---------------------------------------------------------------------------
 
-// Normalized payload ready to insert into mailgun_events. The shape is
-// independent of Mailgun's raw event format so the persistence layer
-// doesn't see the wire-format variability.
+// Normalized payload the pull loop folds directly into the two
+// engagement rollups. There is no raw event ledger, so this is never
+// persisted — it's a transient carrier between normalizeEvent and the
+// applyEventTo* functions, carrying only the fields the rollups consume.
 type NormalizedEvent = {
-  domain: string;
-  mailgun_event_id: string;
   event: string;
   severity: string | null;
   recipient: string;
-  recipient_domain: string;
   event_timestamp_ms: number;
-  event_timestamp_iso: string;
-  message_id: string | null;
-  mg_send_id: string;
-  url: string | null;
   reason: string | null;
-  tags: string | null;
-  client_info: string | null;
-  geolocation: string | null;
-  user_variables: string | null;
-  raw_payload: string;
 };
 
-// Normalize a raw Mailgun event into our persisted row shape. Returns null
+// Normalize a raw Mailgun event into the rollup-ready shape. Returns null
 // if the event lacks the bare minimum identifiers we need (id, event,
 // timestamp, recipient) — defensively rejecting malformed events without
 // crashing the pull.
-export function normalizeEvent(
-  raw: MailgunEventRaw,
-  domain: string,
-  sendID: string,
-): NormalizedEvent | null {
+export function normalizeEvent(raw: MailgunEventRaw): NormalizedEvent | null {
   if (!raw || typeof raw !== 'object') return null;
   if (!raw.id || !raw.event || typeof raw.timestamp !== 'number') return null;
   const recipient = (raw.recipient ?? '').toLowerCase();
   if (!recipient) return null;
-  const atIdx = recipient.lastIndexOf('@');
-  const recipientDomain = atIdx >= 0 ? recipient.slice(atIdx + 1) : '';
-  const tsMs = Math.floor(raw.timestamp * 1000);
   return {
-    domain,
-    mailgun_event_id: raw.id,
     event: raw.event,
     severity: (raw.severity as string | undefined) ?? null,
     recipient,
-    recipient_domain: recipientDomain,
-    event_timestamp_ms: tsMs,
-    event_timestamp_iso: new Date(tsMs).toISOString(),
-    message_id:
-      (raw.message?.headers?.['message-id'] as string | undefined) ?? null,
-    mg_send_id: sendID,
-    url: (raw.url as string | undefined) ?? null,
+    event_timestamp_ms: Math.floor(raw.timestamp * 1000),
     reason: (raw.reason as string | undefined) ?? null,
-    tags: raw.tags ? JSON.stringify(raw.tags) : null,
-    client_info: raw['client-info'] ? JSON.stringify(raw['client-info']) : null,
-    geolocation: raw.geolocation ? JSON.stringify(raw.geolocation) : null,
-    user_variables: raw['user-variables'] ? JSON.stringify(raw['user-variables']) : null,
-    raw_payload: JSON.stringify(raw),
   };
 }
 
-// Insert one event into mailgun_events with INSERT OR IGNORE. Returns
-// { inserted: true, contact_id } if the row was new, { inserted: false }
-// if a row with this mailgun_event_id already existed.
-//
-// Idempotency is the entire reason the events archive is safe to retry —
-// the 6h overlap window we re-fetch on every beat will re-hit events
-// we've already archived, and the UNIQUE constraint on mailgun_event_id
-// is what makes that a no-op.
-//
-// Returns contact_id so the caller can decide whether to fire the
-// engagement-summary UPSERT (only fires when a row was actually new).
-export async function insertEventIfNew(
+// Resolve a recipient email to its contact_id, or null when no contact
+// matches. Mailgun can report events for addresses we never stored
+// (e.g. forwarded mail); those simply don't move any rollup.
+export async function lookupContactIDByEmail(
   db: D1Database,
-  ev: NormalizedEvent,
-): Promise<{ inserted: boolean; id: string; contact_id: string | null }> {
-  const id = newMailgunEvent();
-  const now = nowISO();
-  // SQLite's changes() reports rows affected by the LAST statement on this
-  // connection. INSERT OR IGNORE returns 0 changes when the UNIQUE
-  // constraint is violated (i.e. duplicate event), 1 when the row was
-  // actually new. D1's .meta.changes carries the same value.
-  //
-  // engagement_applied starts at 0 (the column default). Phase 5 added
-  // this flag — the caller flips it to 1 only after a successful
-  // applyEventToEngagement (via markEngagementApplied). If the apply
-  // step crashes or fails, the row stays at 0 and the replay scanner
-  // (replayUnappliedEngagement) reconciles it on the next pull tick.
-  const insertResult = await db
-    .prepare(
-      `INSERT OR IGNORE INTO mailgun_events
-         (id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
-          event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
-          url, reason, tags, client_info, geolocation, user_variables, raw_payload,
-          engagement_applied, created_at)
-       VALUES (
-         ?, ?, ?, ?, ?, ?, ?,
-         ?, ?, ?, ?,
-         (SELECT id FROM contacts WHERE email = ? LIMIT 1),
-         ?, ?, ?, ?, ?, ?, ?, 0, ?
-       )`,
-    )
-    .bind(
-      id,
-      ev.domain,
-      ev.mailgun_event_id,
-      ev.event,
-      ev.severity,
-      ev.recipient,
-      ev.recipient_domain,
-      ev.event_timestamp_ms,
-      ev.event_timestamp_iso,
-      ev.message_id,
-      ev.mg_send_id,
-      ev.recipient,
-      ev.url,
-      ev.reason,
-      ev.tags,
-      ev.client_info,
-      ev.geolocation,
-      ev.user_variables,
-      ev.raw_payload,
-      now,
-    )
-    .run();
-
-  const inserted = (insertResult.meta?.changes ?? 0) > 0;
-  if (!inserted) return { inserted: false, id: '', contact_id: null };
-
-  // Look up the contact_id we just stamped onto the row. Cheaper than a
-  // second SELECT against contacts because the row we want is the one
-  // we just inserted and the index lookup is single-key.
+  email: string,
+): Promise<string | null> {
   const row = await db
-    .prepare(`SELECT contact_id FROM mailgun_events WHERE id = ?`)
-    .bind(id)
-    .first<{ contact_id: string | null }>();
-  return { inserted: true, id, contact_id: row?.contact_id ?? null };
-}
-
-// Flip engagement_applied=1 for one event. Called by the pull loop after
-// a successful applyEventToEngagement (or immediately for events that
-// don't update engagement, so the replay query doesn't see them). Idempotent.
-export async function markEngagementApplied(
-  db: D1Database,
-  eventID: string,
-): Promise<void> {
-  await db
-    .prepare(`UPDATE mailgun_events SET engagement_applied = 1 WHERE id = ?`)
-    .bind(eventID)
-    .run();
-}
-
-export type UnappliedEngagementEvent = {
-  id: string;
-  mg_send_id: string;
-  contact_id: string | null;
-  event: string;
-  event_timestamp_ms: number;
-};
-
-// Return up to `limit` raw events that were ingested but never had their
-// engagement summary updated. Bounded + ordered ASC by event_timestamp_ms
-// so replay applies events in original arrival order. The partial index
-// idx_mailgun_events_unapplied makes this cheap when the pending set is
-// small (the typical case).
-export async function listUnappliedEngagementEvents(
-  db: D1Database,
-  limit = 500,
-): Promise<UnappliedEngagementEvent[]> {
-  if (limit <= 0) limit = 500;
-  const { results } = await db
-    .prepare(
-      `SELECT id, mg_send_id, contact_id, event, event_timestamp_ms
-       FROM mailgun_events
-       WHERE engagement_applied = 0
-       ORDER BY event_timestamp_ms ASC
-       LIMIT ?`,
-    )
-    .bind(limit)
-    .all<UnappliedEngagementEvent>();
-  return results ?? [];
+    .prepare(`SELECT id FROM contacts WHERE email = ? LIMIT 1`)
+    .bind(email.toLowerCase())
+    .first<{ id: string }>();
+  return row?.id ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -344,8 +203,9 @@ export async function listUnappliedEngagementEvents(
 //   - clicked   → bump total_clicks, RESET messages_since_last_engagement
 //   - other     → no-op
 //
-// Idempotency lives one layer up: this is only called when the parent
-// INSERT actually inserted a row, so we can't double-count.
+// Counters increment per call; the incremental watermark (each pull
+// begins strictly after the previous pull's highest event timestamp)
+// ensures each event is applied exactly once.
 export async function applyEventToEngagement(
   db: D1Database,
   contactID: string,
@@ -419,6 +279,123 @@ export async function applyEventToEngagement(
   }
 }
 
+// Apply one event to the per-(send, contact) detail row in
+// contact_message_engagement. eventTsSec is epoch SECONDS (caller
+// converts from ms). listID may be null for list-less singles.
+// severity/reason are only consulted for failures.
+//
+// Counters increment per call; the incremental watermark ensures each
+// event is applied exactly once. Timestamp fields use MIN/MAX so
+// out-of-order arrival within a single pull converges.
+export async function applyEventToMessageEngagement(
+  db: D1Database,
+  sendID: string,
+  contactID: string,
+  listID: string | null,
+  eventType: string,
+  eventTsSec: number,
+  severity: string | null,
+  reason: string | null,
+): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  switch (eventType) {
+    case 'accepted':
+      await db
+        .prepare(
+          `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, sent_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(send_id, contact_id) DO UPDATE SET
+             sent_at    = MIN(COALESCE(sent_at, excluded.sent_at), excluded.sent_at),
+             updated_at = excluded.updated_at`,
+        )
+        .bind(sendID, contactID, listID, eventTsSec, now)
+        .run();
+      return;
+    case 'delivered':
+      await db
+        .prepare(
+          `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, delivered_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(send_id, contact_id) DO UPDATE SET
+             delivered_at = MIN(COALESCE(delivered_at, excluded.delivered_at), excluded.delivered_at),
+             updated_at   = excluded.updated_at`,
+        )
+        .bind(sendID, contactID, listID, eventTsSec, now)
+        .run();
+      return;
+    case 'opened':
+      await db
+        .prepare(
+          `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, first_open_at, last_open_at, total_opens, updated_at)
+           VALUES (?, ?, ?, ?, ?, 1, ?)
+           ON CONFLICT(send_id, contact_id) DO UPDATE SET
+             first_open_at = MIN(COALESCE(first_open_at, excluded.first_open_at), excluded.first_open_at),
+             last_open_at  = MAX(COALESCE(last_open_at, 0), excluded.last_open_at),
+             total_opens   = total_opens + 1,
+             updated_at    = excluded.updated_at`,
+        )
+        .bind(sendID, contactID, listID, eventTsSec, eventTsSec, now)
+        .run();
+      return;
+    case 'clicked':
+      await db
+        .prepare(
+          `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, first_click_at, last_click_at, total_clicks, updated_at)
+           VALUES (?, ?, ?, ?, ?, 1, ?)
+           ON CONFLICT(send_id, contact_id) DO UPDATE SET
+             first_click_at = MIN(COALESCE(first_click_at, excluded.first_click_at), excluded.first_click_at),
+             last_click_at  = MAX(COALESCE(last_click_at, 0), excluded.last_click_at),
+             total_clicks   = total_clicks + 1,
+             updated_at     = excluded.updated_at`,
+        )
+        .bind(sendID, contactID, listID, eventTsSec, eventTsSec, now)
+        .run();
+      return;
+    case 'failed':
+    case 'rejected':
+      await db
+        .prepare(
+          `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, failed, failed_at, failure_severity, failure_reason, updated_at)
+           VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+           ON CONFLICT(send_id, contact_id) DO UPDATE SET
+             failed           = 1,
+             failed_at        = MAX(COALESCE(failed_at, 0), excluded.failed_at),
+             failure_severity = excluded.failure_severity,
+             failure_reason   = excluded.failure_reason,
+             updated_at       = excluded.updated_at`,
+        )
+        .bind(sendID, contactID, listID, eventTsSec, severity, reason, now)
+        .run();
+      return;
+    case 'complained':
+      await db
+        .prepare(
+          `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, complained_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(send_id, contact_id) DO UPDATE SET
+             complained_at = MAX(COALESCE(complained_at, 0), excluded.complained_at),
+             updated_at    = excluded.updated_at`,
+        )
+        .bind(sendID, contactID, listID, eventTsSec, now)
+        .run();
+      return;
+    case 'unsubscribed':
+      await db
+        .prepare(
+          `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, unsubscribed_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(send_id, contact_id) DO UPDATE SET
+             unsubscribed_at = MAX(COALESCE(unsubscribed_at, 0), excluded.unsubscribed_at),
+             updated_at      = excluded.updated_at`,
+        )
+        .bind(sendID, contactID, listID, eventTsSec, now)
+        .run();
+      return;
+    default:
+      return;
+  }
+}
+
 // Look up the list_id for a send. Returns null for singles that aren't
 // list-tied. Cached opportunistically by the caller per-pull (one send
 // = one list_id, so we look it up once per pullEventsForOneSend invocation).
@@ -431,52 +408,41 @@ export async function getSendListID(db: D1Database, sendID: string): Promise<str
 }
 
 // ---------------------------------------------------------------------------
-// Read endpoints (Phase 3)
+// Read endpoints
 // ---------------------------------------------------------------------------
 
-export type ListSendEventsParams = {
+export type ListSendRecipientsParams = {
   sendID: string;
-  eventType?: string;
-  sinceMs?: number;
-  afterTsMs?: number;
-  afterID?: string;
+  afterContactID?: string;
   limit?: number;
 };
 
-// listSendEvents returns one page of archived events for a send,
-// ordered ASC by (event_timestamp_ms, id). Keyset cursor over (ts, id)
-// keeps pagination stable across late-arriving events (they fall before
-// the cursor and won't show up on subsequent pages; that's a deliberate
-// trade-off — for "find late-arriving opens" use sinceMs to refetch).
-export async function listSendEvents(
+// listSendRecipients returns one page of per-recipient message
+// engagement rows for a send, ordered by contact_id ASC. Keyset
+// paginated on contact_id (unique within a send via the composite PK).
+export async function listSendRecipients(
   db: D1Database,
-  p: ListSendEventsParams,
-): Promise<MailgunEvent[]> {
+  p: ListSendRecipientsParams,
+): Promise<MessageEngagement[]> {
   const limit = Math.max(1, Math.min(p.limit ?? 100, 500));
-  const clauses: string[] = ['mg_send_id = ?'];
+  const clauses: string[] = ['send_id = ?'];
   const args: unknown[] = [p.sendID];
-  if (p.eventType) {
-    clauses.push('event = ?');
-    args.push(p.eventType);
-  }
-  if (p.sinceMs && p.sinceMs > 0) {
-    clauses.push('event_timestamp_ms >= ?');
-    args.push(p.sinceMs);
-  }
-  if ((p.afterTsMs && p.afterTsMs > 0) || p.afterID) {
-    clauses.push('(event_timestamp_ms > ? OR (event_timestamp_ms = ? AND id > ?))');
-    args.push(p.afterTsMs ?? 0, p.afterTsMs ?? 0, p.afterID ?? '');
+  if (p.afterContactID) {
+    clauses.push('contact_id > ?');
+    args.push(p.afterContactID);
   }
   args.push(limit);
   const sql = `
-    SELECT id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
-           event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
-           url, reason, tags, client_info, geolocation, user_variables, raw_payload, created_at
-    FROM mailgun_events
+    SELECT send_id, contact_id, list_id, sent_at, delivered_at,
+           first_open_at, last_open_at, total_opens,
+           first_click_at, last_click_at, total_clicks,
+           failed, failed_at, failure_severity, failure_reason,
+           complained_at, unsubscribed_at, replied_at, updated_at
+    FROM contact_message_engagement
     WHERE ${clauses.join(' AND ')}
-    ORDER BY event_timestamp_ms ASC, id ASC
+    ORDER BY contact_id ASC
     LIMIT ?`;
-  const { results } = await db.prepare(sql).bind(...args).all<MailgunEvent>();
+  const { results } = await db.prepare(sql).bind(...args).all<MessageEngagement>();
   return results ?? [];
 }
 

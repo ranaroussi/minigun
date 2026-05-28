@@ -24,7 +24,7 @@ func RegisterTools(s *mcpsdk.Server, c *client.Client) {
 	addResumeSend(s, c)
 	addGetSendStatus(s, c)
 	addGetSendStats(s, c)
-	addListSendEvents(s, c)
+	addListSendRecipients(s, c)
 	addGetContactEngagement(s, c)
 	addPruneList(s, c)
 }
@@ -326,31 +326,23 @@ func addGetSendStats(s *mcpsdk.Server, c *client.Client) {
 	})
 }
 
-type listSendEventsInput struct {
-	SendID    string `json:"send_id" jsonschema:"Send id returned by send_bulk / send_single"`
-	Event     string `json:"event,omitempty" jsonschema:"Filter by event type: delivered | opened | clicked | failed | complained | unsubscribed"`
-	SinceMs   int64  `json:"since_ms,omitempty" jsonschema:"Lower bound on event_timestamp_ms (Unix epoch milliseconds)"`
-	Limit     int    `json:"limit,omitempty" jsonschema:"Page size (default 100, max 500)"`
-	Cursor    string `json:"cursor,omitempty" jsonschema:"Opaque keyset cursor from a previous page's next_cursor"`
+type listSendRecipientsInput struct {
+	SendID string `json:"send_id" jsonschema:"Send id returned by send_bulk / send_single"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"Page size (default 100, max 500)"`
+	Cursor string `json:"cursor,omitempty" jsonschema:"Opaque keyset cursor (last contact_id) from a previous page's next_cursor"`
 }
 
-func addListSendEvents(s *mcpsdk.Server, c *client.Client) {
+func addListSendRecipients(s *mcpsdk.Server, c *client.Client) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
-		Name:        "list_send_events",
-		Description: "Returns archived Mailgun events for a send (delivered/opened/clicked/failed/complained/unsubscribed) with keyset pagination. Requires EVENTS_ARCHIVE_ENABLED on the server. Useful for forensic replay, engagement audits, and reconstructing campaign timelines beyond Mailgun's 30-day retention.",
+		Name:        "list_send_recipients",
+		Description: "Returns the per-recipient message engagement rollup for a send (one row per contact: sent/delivered timestamps, first/last open + click with counts, failure/complaint/unsubscribe state), keyset-paginated by contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server. Use for 'how did each recipient engage with this send' analysis.",
 		Annotations: &mcpsdk.ToolAnnotations{
 			ReadOnlyHint: true,
-			Title:        "List send events",
+			Title:        "List send recipients",
 		},
-	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in listSendEventsInput) (*mcpsdk.CallToolResult, struct{}, error) {
-		path := "/send/" + in.SendID + "/events"
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in listSendRecipientsInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		path := "/send/" + in.SendID + "/recipients"
 		params := []string{}
-		if in.Event != "" {
-			params = append(params, "event="+in.Event)
-		}
-		if in.SinceMs > 0 {
-			params = append(params, fmt.Sprintf("since=%d", in.SinceMs))
-		}
 		if in.Limit > 0 {
 			params = append(params, fmt.Sprintf("limit=%d", in.Limit))
 		}

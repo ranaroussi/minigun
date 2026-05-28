@@ -214,47 +214,41 @@ var sendStatsCmd = &cobra.Command{
 }
 
 var (
-	eventsFilter string
-	eventsSince  int64
-	eventsLimit  int
-	eventsCursor string
-	eventsAll    bool
+	recipientsLimit  int
+	recipientsCursor string
+	recipientsAll    bool
 )
 
-var sendEventsCmd = &cobra.Command{
-	Use:   "events <send_id>",
-	Short: "List archived Mailgun events for a send (delivered/opened/clicked/failed/complained/unsubscribed)",
-	Long: `Returns the per-event archive for a send: every delivered/opened/clicked/
-failed/complained/unsubscribed event MiniGun has pulled from Mailgun.
+var sendRecipientsCmd = &cobra.Command{
+	Use:   "recipients <send_id>",
+	Short: "List per-recipient message engagement for a send (sent/delivered/opens/clicks/failure)",
+	Long: `Returns one row per recipient of a send, summarizing how that contact
+interacted with the message: sent/delivered timestamps, first/last open
+and click with counts, and failure/complaint/unsubscribe state.
 
-Pagination uses an opaque keyset cursor over (event_timestamp_ms, id).
-Pass --cursor with the value returned in next_cursor to get the next page,
-or use --all to follow pagination automatically until exhausted.
+This is the per-message detail tier (contact_message_engagement). For a
+contact's lifetime engagement across a whole list, use
+'minigun contact engagement'.
 
-Requires EVENTS_ARCHIVE_ENABLED on the server side. If no events show up,
-either the feature flag is off, the send is older than the 30-day archive
-window, or the archive cron hasn't run yet.`,
+Pagination is a keyset cursor over contact_id. Pass --cursor with the
+value from next_cursor, or --all to follow pagination automatically.
+
+Requires EVENTS_ARCHIVE_ENABLED on the server side.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sendID := args[0]
 		cli := newClient()
-		cursor := eventsCursor
+		cursor := recipientsCursor
 		first := true
 		for {
 			q := url.Values{}
-			if eventsFilter != "" {
-				q.Set("event", eventsFilter)
-			}
-			if eventsSince > 0 {
-				q.Set("since", fmt.Sprintf("%d", eventsSince))
-			}
-			if eventsLimit > 0 {
-				q.Set("limit", fmt.Sprintf("%d", eventsLimit))
+			if recipientsLimit > 0 {
+				q.Set("limit", fmt.Sprintf("%d", recipientsLimit))
 			}
 			if cursor != "" {
 				q.Set("cursor", cursor)
 			}
-			path := fmt.Sprintf("/send/%s/events", sendID)
+			path := fmt.Sprintf("/send/%s/recipients", sendID)
 			if enc := q.Encode(); enc != "" {
 				path += "?" + enc
 			}
@@ -266,11 +260,10 @@ window, or the archive cron hasn't run yet.`,
 				printJSON(resp.Body)
 				return resp.Error()
 			}
-			if !eventsAll {
+			if !recipientsAll {
 				printJSON(resp.Body)
 				return nil
 			}
-			// --all mode: print the items and follow next_cursor until empty.
 			var page struct {
 				Items      []json.RawMessage `json:"items"`
 				NextCursor string            `json:"next_cursor"`
@@ -384,12 +377,10 @@ func init() {
 	sendStatusCmd.Flags().BoolVarP(&statusWatch, "watch", "w", false, "Poll status until the send reaches a terminal state")
 	sendStatusCmd.Flags().DurationVar(&statusInterval, "interval", 2*time.Second, "Polling interval when --watch is set")
 
-	sendEventsCmd.Flags().StringVar(&eventsFilter, "event", "", "Filter by event type (delivered, opened, clicked, failed, complained, unsubscribed)")
-	sendEventsCmd.Flags().Int64Var(&eventsSince, "since", 0, "Lower bound on event_timestamp_ms (Unix epoch milliseconds)")
-	sendEventsCmd.Flags().IntVar(&eventsLimit, "limit", 100, "Page size (default 100, max 500)")
-	sendEventsCmd.Flags().StringVar(&eventsCursor, "cursor", "", "Opaque pagination cursor from a previous page's next_cursor")
-	sendEventsCmd.Flags().BoolVar(&eventsAll, "all", false, "Follow next_cursor and emit all events as one JSON array")
+	sendRecipientsCmd.Flags().IntVar(&recipientsLimit, "limit", 100, "Page size (default 100, max 500)")
+	sendRecipientsCmd.Flags().StringVar(&recipientsCursor, "cursor", "", "Opaque pagination cursor from a previous page's next_cursor")
+	sendRecipientsCmd.Flags().BoolVar(&recipientsAll, "all", false, "Follow next_cursor and emit all recipients as one JSON array")
 
-	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendStatusCmd, sendStatsCmd, sendEventsCmd)
+	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendStatusCmd, sendStatsCmd, sendRecipientsCmd)
 	rootCmd.AddCommand(sendCmd)
 }

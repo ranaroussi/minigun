@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -13,49 +12,18 @@ import (
 	"github.com/ranaroussi/minigun/internal/store"
 )
 
-// eventsCursor is the opaque keyset cursor we hand back to clients. The
-// shape is intentionally minimal — just the (ts, id) tuple — so future
-// schema changes can extend it without breaking existing pages.
-type eventsCursor struct {
-	Ts int64  `json:"t"`
-	ID string `json:"i"`
-}
-
-func encodeEventsCursor(c eventsCursor) string {
-	raw, _ := json.Marshal(c)
-	return strings.TrimRight(base64.URLEncoding.EncodeToString(raw), "=")
-}
-
-func decodeEventsCursor(s string) (eventsCursor, error) {
-	if s == "" {
-		return eventsCursor{}, nil
-	}
-	pad := s
-	if rem := len(pad) % 4; rem != 0 {
-		pad += strings.Repeat("=", 4-rem)
-	}
-	raw, err := base64.URLEncoding.DecodeString(pad)
-	if err != nil {
-		return eventsCursor{}, errors.New("invalid cursor")
-	}
-	var c eventsCursor
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return eventsCursor{}, errors.New("invalid cursor")
-	}
-	return c, nil
-}
-
-// handleListSendEvents — GET /sends/{id}/events.
+// handleListSendRecipients — GET /send/{id}/recipients.
+//
+// Returns the per-recipient message engagement rollup for a send (one
+// row per contact: sent/delivered/open/click/failure timestamps + counts),
+// keyset-paginated by contact_id.
 //
 // Query params:
-//   event    — filter by event type (delivered/opened/clicked/...)
-//   since    — lower bound on event_timestamp_ms (int ms epoch)
-//   limit    — page size (default 100, max 500)
-//   cursor   — opaque keyset cursor from a previous page's next_cursor
+//   limit   — page size (default 100, max 500)
+//   cursor  — opaque cursor (last contact_id) from a previous page
 //
-// Response: { items: [...], next_cursor: "..." }. next_cursor is empty
-// when the page is the last one.
-func (s *Server) handleListSendEvents(w http.ResponseWriter, r *http.Request) {
+// Response: { items: [...], next_cursor: "..." }.
+func (s *Server) handleListSendRecipients(w http.ResponseWriter, r *http.Request) {
 	sendID := strings.TrimSpace(chi.URLParam(r, "id"))
 	if sendID == "" {
 		writeError(w, http.StatusBadRequest, "send id required")
@@ -69,35 +37,35 @@ func (s *Server) handleListSendEvents(w http.ResponseWriter, r *http.Request) {
 	if limit > 500 {
 		limit = 500
 	}
-	since, _ := strconv.ParseInt(q.Get("since"), 10, 64)
-
-	cur, err := decodeEventsCursor(q.Get("cursor"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	// Cursor is the last contact_id of the previous page, base64-encoded
+	// to keep the wire shape opaque/extensible.
+	after := ""
+	if cur := q.Get("cursor"); cur != "" {
+		pad := cur
+		if rem := len(pad) % 4; rem != 0 {
+			pad += strings.Repeat("=", 4-rem)
+		}
+		raw, err := base64.URLEncoding.DecodeString(pad)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		after = string(raw)
 	}
-	events, err := s.store.ListSendEvents(r.Context(), store.ListSendEventsParams{
-		SendID:    sendID,
-		EventType: strings.TrimSpace(q.Get("event")),
-		SinceMs:   since,
-		AfterTsMs: cur.Ts,
-		AfterID:   cur.ID,
-		Limit:     limit,
+	rows, err := s.store.ListSendRecipients(r.Context(), store.ListSendRecipientsParams{
+		SendID:         sendID,
+		AfterContactID: after,
+		Limit:          limit,
 	})
 	if err != nil {
-		s.log.Error("list send events", "send_id", sendID, "err", err)
+		s.log.Error("list send recipients", "send_id", sendID, "err", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	resp := map[string]any{
-		"items": events,
-	}
-	// We emit a next_cursor when this page filled to the limit — even
-	// if the next page would be empty, the next request will tell the
-	// client so by returning an empty items array + no cursor.
-	if len(events) == limit {
-		last := events[len(events)-1]
-		resp["next_cursor"] = encodeEventsCursor(eventsCursor{Ts: last.EventTimestampMs, ID: last.ID})
+	resp := map[string]any{"items": rows}
+	if len(rows) == limit {
+		last := rows[len(rows)-1]
+		resp["next_cursor"] = strings.TrimRight(base64.URLEncoding.EncodeToString([]byte(last.ContactID)), "=")
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -313,22 +313,19 @@ class Minigun
     }
 
     /**
-     * One page of archived Mailgun events for a send. Requires
-     * EVENTS_ARCHIVE_ENABLED on the server.
+     * One page of per-recipient message engagement for a send (one row
+     * per contact: sent/delivered timestamps, first/last open + click
+     * with counts, failure/complaint/unsubscribe state). Keyset-paginated
+     * by contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server.
      *
-     * Returns ['items' => [...], 'next_cursor' => ?string]. When
-     * next_cursor is absent / empty, the page is the last one.
-     *
-     * @param array{event?: string, since_ms?: int, limit?: int, cursor?: string} $opts
+     * @param array{limit?:int, cursor?:string} $opts
      */
-    public function listSendEvents(string $sendId, array $opts = []): array
+    public function listSendRecipients(string $sendId, array $opts = []): array
     {
         $params = [];
-        if (!empty($opts['event']))    $params['event']  = $opts['event'];
-        if (!empty($opts['since_ms'])) $params['since']  = (string) $opts['since_ms'];
-        if (!empty($opts['limit']))    $params['limit']  = (string) $opts['limit'];
-        if (!empty($opts['cursor']))   $params['cursor'] = $opts['cursor'];
-        $path = '/send/' . rawurlencode($sendId) . '/events';
+        if (!empty($opts['limit']))  $params['limit']  = (string) $opts['limit'];
+        if (!empty($opts['cursor'])) $params['cursor'] = $opts['cursor'];
+        $path = '/send/' . rawurlencode($sendId) . '/recipients';
         if ($params) {
             $path .= '?' . http_build_query($params);
         }

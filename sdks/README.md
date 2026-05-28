@@ -30,6 +30,9 @@ The PHP SDK was the first one written and the others mirror its shape deliberate
 | Send status snapshot  | `getSend()`                  | `get_send()`            | `getSend()`              | `GetSend()`              |
 | Send aggregate stats  | `getSendStats()`             | `get_send_stats()`      | `getSendStats()`         | `GetSendStats()`         |
 | Resume paused/failed  | `resumeSend()`               | `resume_send()`         | `resumeSend()`           | `ResumeSend()`           |
+| Send recipient rollup | `listSendRecipients()`       | `list_send_recipients()`| `listSendRecipients()`   | `ListSendRecipients()`   |
+| Contact engagement    | `getContactEngagement()`     | `get_contact_engagement()` | `getContactEngagement()` | `GetContactEngagement()` |
+| Prune dormant list    | `pruneList()`                | `prune_list()`          | `pruneList()`            | `PruneList()`            |
 
 The unsubscribe-mode constants are the same too: `UNSUB_LOCAL` / `UNSUB_REDIRECT` / `UNSUB_EXTERNAL` (PHP class consts, Python module constants, TypeScript exported constants, Go package constants).
 

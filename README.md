@@ -9,7 +9,7 @@ A tiny self-hosted email sender that sits on top of [Mailgun](https://www.mailgu
 - **Markdown templates** with `{{first_name | "there"}}` variable defaults — no MJML, no HTML builder, no second template language.
 - **Crash-safe bulk sends** that survive worker restarts and resume from the last completed batch. Run a 100k-recipient send on a Cloudflare Worker without a single long-running process.
 - **Automatic list hygiene** — hard bounces and spam complaints purge themselves in real time via a signed Mailgun webhook. Engagement-based prune (Phase 4) unsubscribes dormant contacts on three configurable signals. Your list self-heals.
-- **Per-send event archive** — pulls Mailgun's events API on a burst-then-daily schedule for 30 days, persists every event locally, and maintains a per-(contact, list) engagement summary that survives Mailgun's 5-day event retention. Powers the prune-by-engagement surface and gives you forever-history on opens, clicks, failures, and complaints.
+- **Per-send engagement rollups** — pulls Mailgun's events API on a burst-then-daily schedule for 30 days and folds each event into two bounded tiers: a per-(send, contact) message rollup and a per-(contact, list) lifetime summary that survives Mailgun's event retention. No raw event log is kept (at most one row per recipient). Powers the prune-by-engagement surface and gives you forever-history on opens, clicks, failures, and complaints.
 - **HMAC unsubscribe tokens** — stateless, no DB lookup to verify, no Mailgun suppression-list lock-in. You own the unsub flow forever.
 - **First-class CLI** — install with one `go install`, drive every server operation with sensible flags + `--watch` mode for tailing in-flight sends.
 - **Agent-ready** — MCP server + a deep operator [skill](./skill/minigun/SKILL.md) that teaches AI clients to run campaigns end-to-end (dispatch rules, IP warming, DMARC graduation, anti-patterns to push back on).
@@ -288,28 +288,31 @@ Each call is bounded (`limit` defaults to 1000, max 10000). Massive backlogs dra
 
 #### Per-send event archive
 
-Backing the engagement-based prune is a permanent local archive of every Mailgun event. Once you set `EVENTS_ARCHIVE_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule (`+0`, `+1h`, `+6h`, `+24h` after a send, then daily for 30 days), de-duplicates against a `UNIQUE(mailgun_event_id)` constraint, and writes every event to a local `mailgun_events` table with the full forensic payload. A per-(contact, list) `contact_engagement` summary is maintained incrementally — `total_delivered`, `total_opens`, `total_clicks`, `messages_since_last_engagement`, `last_engagement_at_ms` — and that summary is what the prune query reads against.
+Backing the engagement-based prune is a local rollup of Mailgun events. Once you set `EVENTS_ARCHIVE_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule (`+0`, `+1h`, `+6h`, `+24h` after a send, then daily for 30 days). Each pull begins at the highest event timestamp the previous pull saw (the send's `created_at` on the first pull) and folds every event straight into two bounded engagement tiers — **no raw per-event rows are stored**:
 
-Two read endpoints expose the archive:
+- **`contact_message_engagement`** — one row per `(send, contact)`: `sent_at`, `delivered_at`, `first/last_open_at` + `total_opens`, `first/last_click_at` + `total_clicks`, plus `failed`/`complained_at`/`unsubscribed_at`. The per-message detail tier (timestamps are epoch seconds). Bounded to ≤ recipients per send.
+- **`contact_engagement`** — the per-`(contact, list)` lifetime rollup (`total_delivered`, `total_opens`, `total_clicks`, `messages_since_last_engagement`, `last_engagement_at_ms`). This is what the prune query reads against.
+
+Because a single contact can open or click many times, a raw event log would grow without bound — so MiniGun keeps no such table. The two rollups together hold at most one row per recipient (per send / per list), and that's all the prune logic and the read surface need.
+
+Two read endpoints expose the rollups:
 
 ```bash
-# Every event for a send (paginated keyset cursor over (event_timestamp_ms, id)):
-minigun send events s_xxxx --event opened --limit 100
-minigun send events s_xxxx --all > events.jsonl   # stream every page
+# Per-recipient message engagement for a send (one row per contact):
+minigun send recipients s_xxxx --all > recipients.jsonl
 
-# Engagement summary for a contact (per-list or global):
+# Lifetime engagement summary for a contact (per-list or global):
 minigun contact engagement alice@example.com
 minigun contact engagement alice@example.com --list newsletter
 ```
 
-Both surfaces are available across HTTP, MCP (`list_send_events`, `get_contact_engagement` — both ReadOnly), and the 4 SDKs.
+Both surfaces are available across HTTP, MCP (`list_send_recipients`, `get_contact_engagement` — both ReadOnly), and the 4 SDKs.
 
 Operational properties:
-- **Idempotent.** Every pull's 6h overlap window re-fetches recent events; `INSERT OR IGNORE` on the UNIQUE event-id deduplicates.
-- **Self-healing on partial failure.** If a raw insert succeeds but the engagement UPSERT fails, the row is left `engagement_applied = 0` and the next pull tick's replay step reconciles it.
-- **Out-of-order safe.** Late `delivered` events for an already-opened message don't inflate dormancy counters (guarded by a `CASE WHEN excluded.last_delivered_at_ms > last_engagement_at_ms` predicate).
-- **Bounded per tick.** 50 pages × 300 events = 15k events/send max; when the cap is hit with more pages, the watermark advances only to the last-processed event timestamp so the next tick covers the gap.
-- **Freezes after 30 days.** Sets `events_archive_complete = 1` so the cron stops polling; the local archive remains queryable forever.
+- **Incremental, no duplicates.** Each pull's window begins strictly after the previous pull's highest event timestamp, so an event is seen once and the per-call counter increments stay correct without any dedup ledger.
+- **Out-of-order safe within a pull.** Timestamp fields converge via `MIN`/`MAX`; a late `delivered` for an already-opened message doesn't inflate dormancy (guarded by a `CASE WHEN excluded.last_delivered_at_ms > last_engagement_at_ms` predicate).
+- **Bounded per tick.** 50 pages × 300 events = 15k events/send max; when the cap is hit with more pages, the watermark advances to the last-processed event timestamp so the next tick continues from there.
+- **Freezes after 30 days.** Sets `events_archive_complete = 1` so the cron stops polling; the rollups remain queryable forever.
 
 The archive is **opt-in.** Default-off `EVENTS_ARCHIVE_ENABLED` means the schema lands dormant; flip the flag whenever you're ready to start collecting.
 
@@ -380,8 +383,8 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | POST   | `/send/{id}/resume`                        | Resume a paused / failed send (alias of `/next`). |
 | GET    | `/send/{id}`                               | Send status + progress. |
 | GET    | `/send/{id}/stats`                         | Aggregate stats (DB-backed; falls back to live Mailgun for fresh sends). |
-| GET    | `/send/{id}/events?event=&since=&limit=&cursor=` | Per-send raw event archive (keyset-paginated by `(event_timestamp_ms, id)`). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
-| GET    | `/contacts/{idOrEmail}/engagement?list_id=` | Contact's per-list engagement summary (totals + last open/click + dormancy counter). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
+| GET    | `/send/{id}/recipients?limit=&cursor=` | Per-recipient message engagement rollup for a send (one row per contact; keyset-paginated by `contact_id`). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
+| GET    | `/contacts/{idOrEmail}/engagement?list_id=` | Contact's per-list lifetime engagement summary (totals + last open/click + dormancy counter). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
 | POST   | `/lists/{list}/prune`                      | Engagement-based prune. Body accepts `min_messages_since_engagement`, `dormant_for_days`, `no_delivery_for_days`, `dry_run` (default true), `limit`, `sample_size`. |
 | GET    | `/u/{token}`                               | Render the unsubscribe confirmation page. |
 | POST   | `/u/{token}`                               | Perform the unsubscribe (form post or RFC 8058 one-click). |
@@ -406,7 +409,7 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | `MINIGUN_TURNSTILE_SITE_KEY`   | no       | —                        | Cloudflare Turnstile site key. |
 | `MINIGUN_TURNSTILE_SECRET_KEY` | no       | —                        | Turnstile secret. Required when site key is set. |
 | `MAILGUN_WEBHOOK_SIGNING_KEY`  | no       | —                        | Mailgun "HTTP webhook signing key" (Sending → Webhooks). When set, `/webhooks/mailgun` accepts signed bounce/complaint events and auto-purges contacts. When unset, the endpoint refuses all requests. |
-| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/events`, `/contacts/{id}/engagement`). Schema and send-path tagging ship dormant; flip to `true` whenever you're ready to start collecting. |
+| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/recipients`, `/contacts/{id}/engagement`). Schema and send-path tagging ship dormant; flip to `true` whenever you're ready to start collecting. |
 | `LIST_HYGIENE_AUTO_PRUNE_ENABLED` | no    | `false`                  | When `true`, the engagement-based prune executor runs once per day against every list with the configured thresholds. Manual `POST /lists/{list}/prune` works independently of this flag. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_COUNT` | no   | `20`                     | Auto-prune contacts whose `messages_since_last_engagement >= N`. Set to `0` to disable this criterion in the cron. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_RECENCY_DAYS` | no | `180`              | Auto-prune contacts whose last open/click is older than N days. Set to `0` to disable. |

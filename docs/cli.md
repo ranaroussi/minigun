@@ -171,27 +171,19 @@ minigun send resume s_8Kx29aPqz --force
 
 `--force` is required when any batch is left in `in_flight` state, since Mailgun may already have accepted it; retrying could duplicate-send.
 
-### `minigun send events <id>`
+### `minigun send recipients <id>`
 
-Read the persisted Mailgun events archive for a send. Requires `EVENTS_ARCHIVE_ENABLED=true` on the server. Keyset-paginated over `(event_timestamp_ms, id)`; one event per line when `--all` is set.
+Per-recipient message engagement rollup for a send — one row per contact summarizing how that recipient interacted with the message: `sent_at`, `delivered_at`, first/last open + click with counts, and failure/complaint/unsubscribe state (timestamps are epoch seconds). Requires `EVENTS_ARCHIVE_ENABLED=true` on the server.
 
 ```bash
-# First page (default limit 100, max 500):
-minigun send events s_8Kx29aPqz
+# First page (keyset-paginated by contact_id, default limit 100, max 500):
+minigun send recipients s_8Kx29aPqz
 
-# Filter by event type:
-minigun send events s_8Kx29aPqz --event opened
-minigun send events s_8Kx29aPqz --event failed
-
-# Only events since a given epoch-ms:
-minigun send events s_8Kx29aPqz --since 1700000000000
-
-# Stream every page as JSON (use --all for large sends — built-in pagination,
-# no need to thread cursors by hand):
-minigun send events s_8Kx29aPqz --all > events.jsonl
+# Stream every recipient as one JSON array:
+minigun send recipients s_8Kx29aPqz --all > recipients.json
 ```
 
-The schedule is burst-then-daily for 30 days after a send, then `events_archive_complete` flips to 1 and the cron stops polling — but the local archive remains queryable forever.
+This is the per-message detail tier (`contact_message_engagement`). For a contact's lifetime engagement across a whole list use `minigun contact engagement`. The archive cron pulls Mailgun's events API burst-then-daily for 30 days, then `events_archive_complete` flips to 1 and polling stops — but the rollups remain queryable forever. MiniGun keeps no raw per-event log; each event folds straight into the rollups (at most one row per recipient).
 
 ### `minigun contact engagement <idOrEmail>`
 
@@ -296,7 +288,7 @@ The `env` block is optional if your MCP client inherits the shell environment. m
 | `resume_send` | `POST /send/{id}/resume` | Destructive — sends mail |
 | `get_send_status` | `GET /send/{id}` | ReadOnly |
 | `get_send_stats` | `GET /send/{id}/stats` | ReadOnly |
-| `list_send_events` | `GET /send/{id}/events` | ReadOnly — requires `EVENTS_ARCHIVE_ENABLED=true` |
+| `list_send_recipients` | `GET /send/{id}/recipients` | ReadOnly — per-recipient message engagement; requires `EVENTS_ARCHIVE_ENABLED=true` |
 | `get_contact_engagement` | `GET /contacts/{idOrEmail}/engagement` | ReadOnly — requires `EVENTS_ARCHIVE_ENABLED=true` |
 | `prune_list` | `POST /lists/{list}/prune` | Destructive — `dry_run` defaults to `true` |
 

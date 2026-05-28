@@ -342,24 +342,20 @@ func (c *Client) PerSendMetrics(ctx context.Context, sendID string, sendCreatedA
 // Events API
 // ---------------------------------------------------------------------------
 
-// RawEvent mirrors Mailgun's per-event JSON shape. Variable-shape fields
-// (message, client-info, geolocation, user-variables) stay as json.RawMessage
-// so the persistence layer can store the raw payload as-is for forensic use
-// while extracting the bits we care about into typed columns.
+// RawEvent mirrors the subset of Mailgun's per-event JSON the engagement
+// rollups consume. The forensic/variable-shape fields (message,
+// client-info, geolocation, user-variables) are intentionally not decoded
+// — MiniGun keeps no raw event log, only the per-(send, contact) and
+// per-(contact, list) rollups folded from these fields.
 type RawEvent struct {
-	ID          string          `json:"id"`
-	Event       string          `json:"event"`
-	Timestamp   float64         `json:"timestamp"`
-	Recipient   string          `json:"recipient"`
-	Severity    string          `json:"severity,omitempty"`
-	Reason      string          `json:"reason,omitempty"`
-	URL         string          `json:"url,omitempty"`
-	Tags        []string        `json:"tags,omitempty"`
-	Message     json.RawMessage `json:"message,omitempty"`
-	ClientInfo  json.RawMessage `json:"client-info,omitempty"`
-	Geolocation json.RawMessage `json:"geolocation,omitempty"`
-	UserVars    json.RawMessage `json:"user-variables,omitempty"`
-	Raw         json.RawMessage `json:"-"` // populated by FetchEvents
+	ID        string   `json:"id"`
+	Event     string   `json:"event"`
+	Timestamp float64  `json:"timestamp"`
+	Recipient string   `json:"recipient"`
+	Severity  string   `json:"severity,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
 }
 
 // EventsPage is one paginated response from Mailgun's events API. The
@@ -389,10 +385,6 @@ type FetchEventsParams struct {
 // FetchEvents fetches the first page of events for a domain, applying the
 // tag filter and time window if set. The returned EventsPage carries the
 // next-page cursor URL so the caller can paginate via FetchEventsPage.
-//
-// The raw_payload is populated on each RawEvent.Raw field, captured at
-// parse time so the caller can stash it into mailgun_events.raw_payload
-// without round-tripping JSON.
 func (c *Client) FetchEvents(ctx context.Context, p FetchEventsParams) (*EventsPage, error) {
 	if p.Domain == "" {
 		return nil, fmt.Errorf("mailgun: FetchEvents requires domain")
@@ -444,9 +436,8 @@ func (c *Client) fetchEventsURL(ctx context.Context, url string) (*EventsPage, e
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
 	}
-	// First decode the wrapper to get items + paging. Then re-decode each
-	// item against the same byte slice to capture the raw_payload of the
-	// individual event without re-marshalling.
+	// Decode the wrapper to items + paging, then decode each item
+	// individually so a single malformed event doesn't kill the page.
 	var wrapper struct {
 		Items  []json.RawMessage `json:"items"`
 		Paging struct {
@@ -464,10 +455,8 @@ func (c *Client) fetchEventsURL(ctx context.Context, url string) (*EventsPage, e
 	for _, raw := range wrapper.Items {
 		var ev RawEvent
 		if err := json.Unmarshal(raw, &ev); err != nil {
-			// Skip individual malformed items; don't kill the whole page.
 			continue
 		}
-		ev.Raw = raw
 		page.Items = append(page.Items, ev)
 	}
 	return page, nil

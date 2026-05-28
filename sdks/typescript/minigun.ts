@@ -260,26 +260,22 @@ export class Minigun {
     return this.post(path, {});
   }
 
-  /** One page of archived Mailgun events for a send (requires
-   * EVENTS_ARCHIVE_ENABLED on the server). Response shape:
-   * { items: [...], next_cursor?: string }. When next_cursor is
-   * absent, the page is the last one. */
-  listSendEvents(
+  /** One page of per-recipient message engagement for a send (one row
+   * per contact: sent/delivered timestamps, first/last open + click with
+   * counts, failure/complaint/unsubscribe state). Keyset-paginated by
+   * contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server. */
+  listSendRecipients(
     sendId: string,
     opts: {
-      event?: string;
-      sinceMs?: number;
       limit?: number;
       cursor?: string;
     } = {},
   ): Promise<unknown> {
     const q = new URLSearchParams();
-    if (opts.event) q.set('event', opts.event);
-    if (opts.sinceMs && opts.sinceMs > 0) q.set('since', String(opts.sinceMs));
     if (opts.limit && opts.limit > 0) q.set('limit', String(opts.limit));
     if (opts.cursor) q.set('cursor', opts.cursor);
     const qs = q.toString();
-    return this.get(`/send/${enc(sendId)}/events${qs ? '?' + qs : ''}`);
+    return this.get(`/send/${enc(sendId)}/recipients${qs ? '?' + qs : ''}`);
   }
 
   /** Per-list engagement counters for one contact. idOrEmail accepts
