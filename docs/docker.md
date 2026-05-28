@@ -93,7 +93,7 @@ The Dockerfile is a multi-stage Alpine build. The final image is roughly 15 MB a
 | `MINIGUN_TURNSTILE_SITE_KEY`   | no       | —                        | Cloudflare Turnstile site key. |
 | `MINIGUN_TURNSTILE_SECRET_KEY` | no       | —                        | Turnstile secret. Required when site key is set. |
 | `MAILGUN_WEBHOOK_SIGNING_KEY`  | no       | —                        | Mailgun HTTP webhook signing key. When set, `/webhooks/mailgun` accepts signed bounce/complaint events and auto-purges contacts. |
-| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the `/send/{id}/recipients` and `/contacts/{id}/engagement` read surface. |
+| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the `/send/{id}/recipients`, `/send/{id}/clicks`, and `/contacts/{id}/engagement` read surface. |
 | `LIST_HYGIENE_AUTO_PRUNE_ENABLED` | no    | `false`                  | When `true`, the engagement-based prune executor runs once per day against every list. Manual `POST /lists/{list}/prune` works regardless. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_COUNT` | no   | `20`                     | Auto-prune contacts whose `messages_since_last_engagement >= N`. Set to `0` to disable. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_RECENCY_DAYS` | no | `180`              | Auto-prune contacts whose last open/click is older than N days. Set to `0` to disable. |

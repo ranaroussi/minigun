@@ -16,7 +16,7 @@
 CREATE TABLE contact_message_engagement (
   send_id            TEXT NOT NULL REFERENCES sends(id)    ON DELETE CASCADE,
   contact_id         TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-  list_id            TEXT,
+  list_id            TEXT,  -- NULL for list-less singles (rolled up only when the recipient is already a known contact)
   sent_at            INTEGER,
   delivered_at       INTEGER,
   first_open_at      INTEGER,

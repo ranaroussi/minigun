@@ -31,6 +31,7 @@ The PHP SDK was the first one written and the others mirror its shape deliberate
 | Send aggregate stats  | `getSendStats()`             | `get_send_stats()`      | `getSendStats()`         | `GetSendStats()`         |
 | Resume paused/failed  | `resumeSend()`               | `resume_send()`         | `resumeSend()`           | `ResumeSend()`           |
 | Send recipient rollup | `listSendRecipients()`       | `list_send_recipients()`| `listSendRecipients()`   | `ListSendRecipients()`   |
+| Send per-URL clicks   | `listSendClicks()`           | `list_send_clicks()`    | `listSendClicks()`       | `ListSendClicks()`       |
 | Contact engagement    | `getContactEngagement()`     | `get_contact_engagement()` | `getContactEngagement()` | `GetContactEngagement()` |
 | Prune dormant list    | `pruneList()`                | `prune_list()`          | `pruneList()`            | `PruneList()`            |
 

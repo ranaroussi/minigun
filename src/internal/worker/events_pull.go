@@ -173,6 +173,22 @@ func (m *Manager) pullEventsForOneSendInternal(ctx context.Context, snd store.Du
 	// per-call counter increments in the Apply* methods stay correct
 	// without any dedup ledger. The +1ms makes the lower bound exclusive
 	// at storage (ms) granularity.
+	//
+	// Known tradeoffs of the no-ledger design (accepted, not bugs):
+	//  1. Counter drift on crash/retry. Events are folded into the
+	//     rollups before the watermark is persisted below, and the
+	//     counter UPSERTs (total_opens+1, messages_since_last_engagement
+	//     +1, ...) are not idempotent. If the process dies mid-pull or
+	//     RecordEventPullProgress fails, the next beat re-applies the
+	//     events already folded this run, inflating the *counts*.
+	//     Timestamp fields converge regardless (MIN/MAX), so only the
+	//     integer counters drift, and recency-based hygiene is unaffected.
+	//  2. Same-millisecond skip at the exclusive boundary. The next pull
+	//     resumes at lastEventTs+1ms, so any event sharing that exact ms
+	//     that wasn't seen this run — a late, eventually-consistent
+	//     arrival, or one stranded past the maxPagesPerSend cap — is
+	//     skipped permanently. Bounded-probability given ms granularity
+	//     and the 15k-events/send cap; the cost of holding no cursor.
 	beginMs := snd.CreatedAtMs
 	if snd.EventsLastPulledThroughMs.Valid {
 		beginMs = snd.EventsLastPulledThroughMs.Int64 + 1
@@ -252,6 +268,13 @@ func (m *Manager) pullEventsForOneSendInternal(ctx context.Context, snd store.Du
 			if listID != "" && isEngagementEvent(ev.Event) {
 				if engErr := m.store.ApplyEventToEngagement(ctx, contactID.String, listID, ev.Event, ev.EventTimestampMs); engErr != nil {
 					return inserted, pages, false, engErr
+				}
+			}
+			// Per-URL click rollup (segmentation). Only "clicked" events
+			// carry a URL; an empty one is a no-op inside ApplyClickToURL.
+			if ev.Event == "clicked" && ev.URL != "" {
+				if clickErr := m.store.ApplyClickToURL(ctx, snd.SendID, contactID.String, listNS, ev.URL, ev.EventTimestampMs/1000); clickErr != nil {
+					return inserted, pages, false, clickErr
 				}
 			}
 		}

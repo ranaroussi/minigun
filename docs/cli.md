@@ -185,6 +185,22 @@ minigun send recipients s_8Kx29aPqz --all > recipients.json
 
 This is the per-message detail tier (`contact_message_engagement`). For a contact's lifetime engagement across a whole list use `minigun contact engagement`. The archive cron pulls Mailgun's events API burst-then-daily for 30 days, then `events_archive_complete` flips to 1 and polling stops — but the rollups remain queryable forever. MiniGun keeps no raw per-event log; each event folds straight into the rollups (at most one row per recipient).
 
+> **Note:** a recipient only appears here if it resolves to a known contact. List sends always upsert their recipients, so they're fully covered. A **list-less transactional single to a brand-new address** is *not* stored as a contact, so it won't show up in this rollup.
+
+### `minigun send clicks <id>`
+
+Per-URL click rollup for a send — one row per `(recipient, clicked URL)`: the canonical destination URL, first/last click timestamps, and a click count. This is the per-link detail behind `contact_message_engagement.total_clicks`, intended for segmenting an audience by what they clicked.
+
+```bash
+# First page (keyset-paginated by (contact_id, url), default limit 100, max 500):
+minigun send clicks s_8Kx29aPqz
+
+# Stream every click row as one JSON array:
+minigun send clicks s_8Kx29aPqz --all > clicks.json
+```
+
+URLs are stored **canonical**: trimmed, scheme + host lowercased (path case preserved), query string and fragment stripped — so the same destination aggregates regardless of UTM/tracking params or per-recipient tokens. Same coverage caveat as `send recipients`: only clicks by known contacts are recorded. Requires `EVENTS_ARCHIVE_ENABLED=true`.
+
 ### `minigun contact engagement <idOrEmail>`
 
 Per-(contact, list) engagement summary: total delivered/opens/clicks, last open + click timestamps, and `messages_since_last_engagement` (the dormancy counter that powers prune-by-count).
@@ -289,6 +305,7 @@ The `env` block is optional if your MCP client inherits the shell environment. m
 | `get_send_status` | `GET /send/{id}` | ReadOnly |
 | `get_send_stats` | `GET /send/{id}/stats` | ReadOnly |
 | `list_send_recipients` | `GET /send/{id}/recipients` | ReadOnly — per-recipient message engagement; requires `EVENTS_ARCHIVE_ENABLED=true` |
+| `list_send_clicks` | `GET /send/{id}/clicks` | ReadOnly — per-URL click rollup for segmentation; requires `EVENTS_ARCHIVE_ENABLED=true` |
 | `get_contact_engagement` | `GET /contacts/{idOrEmail}/engagement` | ReadOnly — requires `EVENTS_ARCHIVE_ENABLED=true` |
 | `prune_list` | `POST /lists/{list}/prune` | Destructive — `dry_run` defaults to `true` |
 

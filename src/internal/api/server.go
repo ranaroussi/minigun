@@ -80,6 +80,7 @@ func (s *Server) routes() chi.Router {
 	r.Get("/send/{id}", s.handleGetSend)
 	r.Get("/send/{id}/stats", s.handleSendStats)
 	r.Get("/send/{id}/recipients", s.handleListSendRecipients)
+	r.Get("/send/{id}/clicks", s.handleListSendClicks)
 
 	r.Get("/contacts/{idOrEmail}/engagement", s.handleGetContactEngagement)
 

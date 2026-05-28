@@ -153,6 +153,9 @@ type NormalizedEvent = {
   recipient: string;
   event_timestamp_ms: number;
   reason: string | null;
+  // Clicked link (only present on "clicked" events). Folded into
+  // contact_message_clicks; canonicalization happens at apply time.
+  url: string;
 };
 
 // Normalize a raw Mailgun event into the rollup-ready shape. Returns null
@@ -170,6 +173,7 @@ export function normalizeEvent(raw: MailgunEventRaw): NormalizedEvent | null {
     recipient,
     event_timestamp_ms: Math.floor(raw.timestamp * 1000),
     reason: (raw.reason as string | undefined) ?? null,
+    url: (raw.url as string | undefined) ?? '',
   };
 }
 
@@ -396,6 +400,57 @@ export async function applyEventToMessageEngagement(
   }
 }
 
+// canonicalizeClickURL normalizes a clicked link so the per-URL rollup
+// keys on the destination rather than per-recipient link noise: trim,
+// lowercase scheme+host (path case preserved), drop query string and
+// fragment. On a parse failure it returns the trimmed input so a
+// malformed link still aggregates deterministically. The URL constructor
+// already lowercases protocol+host and renders a bare host with a
+// trailing slash, matching the Go canonicalizer.
+export function canonicalizeClickURL(raw: string): string {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return '';
+  try {
+    const u = new URL(trimmed);
+    u.search = '';
+    u.hash = '';
+    return u.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+// applyClickToURL folds one "clicked" event into the per-URL rollup
+// (contact_message_clicks). url is canonicalized here; an empty/blank url
+// is a no-op (cme.total_clicks still counts it). eventTsSec is epoch
+// SECONDS. Same accepted crash/retry counter drift as the other Apply*.
+export async function applyClickToURL(
+  db: D1Database,
+  sendID: string,
+  contactID: string,
+  listID: string | null,
+  rawURL: string,
+  eventTsSec: number,
+): Promise<void> {
+  const clickURL = canonicalizeClickURL(rawURL);
+  if (!clickURL) return;
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .prepare(
+      `INSERT INTO contact_message_clicks
+         (send_id, contact_id, list_id, url, first_click_at, last_click_at, total_clicks, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+       ON CONFLICT(send_id, contact_id, url) DO UPDATE SET
+         first_click_at = MIN(COALESCE(first_click_at, excluded.first_click_at), excluded.first_click_at),
+         last_click_at  = MAX(COALESCE(last_click_at, 0), excluded.last_click_at),
+         total_clicks   = total_clicks + 1,
+         list_id        = COALESCE(list_id, excluded.list_id),
+         updated_at     = excluded.updated_at`,
+    )
+    .bind(sendID, contactID, listID, clickURL, eventTsSec, eventTsSec, now)
+    .run();
+}
+
 // Look up the list_id for a send. Returns null for singles that aren't
 // list-tied. Cached opportunistically by the caller per-pull (one send
 // = one list_id, so we look it up once per pullEventsForOneSend invocation).
@@ -443,6 +498,52 @@ export async function listSendRecipients(
     ORDER BY contact_id ASC
     LIMIT ?`;
   const { results } = await db.prepare(sql).bind(...args).all<MessageEngagement>();
+  return results ?? [];
+}
+
+// MessageClick mirrors a row of contact_message_clicks — the per-URL
+// click rollup for a (send, contact). Timestamps are epoch SECONDS.
+export type MessageClick = {
+  send_id: string;
+  contact_id: string;
+  list_id: string | null;
+  url: string;
+  first_click_at: number | null;
+  last_click_at: number | null;
+  total_clicks: number;
+  updated_at: number;
+};
+
+export type ListSendClicksParams = {
+  sendID: string;
+  afterContactID?: string;
+  afterURL?: string;
+  limit?: number;
+};
+
+// listSendClicks returns one page of per-URL click rows for a send,
+// ordered by (contact_id, url) ASC. Keyset-paginated on that composite
+// (unique within a send via the PK).
+export async function listSendClicks(
+  db: D1Database,
+  p: ListSendClicksParams,
+): Promise<MessageClick[]> {
+  const limit = Math.max(1, Math.min(p.limit ?? 100, 500));
+  const clauses: string[] = ['send_id = ?'];
+  const args: unknown[] = [p.sendID];
+  if (p.afterContactID) {
+    clauses.push('(contact_id > ? OR (contact_id = ? AND url > ?))');
+    args.push(p.afterContactID, p.afterContactID, p.afterURL ?? '');
+  }
+  args.push(limit);
+  const sql = `
+    SELECT send_id, contact_id, list_id, url,
+           first_click_at, last_click_at, total_clicks, updated_at
+    FROM contact_message_clicks
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY contact_id ASC, url ASC
+    LIMIT ?`;
+  const { results } = await db.prepare(sql).bind(...args).all<MessageClick>();
   return results ?? [];
 }
 

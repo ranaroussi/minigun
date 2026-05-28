@@ -25,6 +25,7 @@ func RegisterTools(s *mcpsdk.Server, c *client.Client) {
 	addGetSendStatus(s, c)
 	addGetSendStats(s, c)
 	addListSendRecipients(s, c)
+	addListSendClicks(s, c)
 	addGetContactEngagement(s, c)
 	addPruneList(s, c)
 }
@@ -342,6 +343,42 @@ func addListSendRecipients(s *mcpsdk.Server, c *client.Client) {
 		},
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in listSendRecipientsInput) (*mcpsdk.CallToolResult, struct{}, error) {
 		path := "/send/" + in.SendID + "/recipients"
+		params := []string{}
+		if in.Limit > 0 {
+			params = append(params, fmt.Sprintf("limit=%d", in.Limit))
+		}
+		if in.Cursor != "" {
+			params = append(params, "cursor="+in.Cursor)
+		}
+		if len(params) > 0 {
+			path += "?"
+			for i, p := range params {
+				if i > 0 {
+					path += "&"
+				}
+				path += p
+			}
+		}
+		return passthrough(c.Get(path))
+	})
+}
+
+type listSendClicksInput struct {
+	SendID string `json:"send_id" jsonschema:"Send id returned by send_bulk / send_single"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"Page size (default 100, max 500)"`
+	Cursor string `json:"cursor,omitempty" jsonschema:"Opaque keyset cursor over (contact_id, url) from a previous page's next_cursor"`
+}
+
+func addListSendClicks(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "list_send_clicks",
+		Description: "Returns the per-URL click rollup for a send (one row per contact + clicked link: canonical URL, first/last click, click count), keyset-paginated over (contact_id, url). Requires EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by what they clicked.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			ReadOnlyHint: true,
+			Title:        "List send clicks",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in listSendClicksInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		path := "/send/" + in.SendID + "/clicks"
 		params := []string{}
 		if in.Limit > 0 {
 			params = append(params, fmt.Sprintf("limit=%d", in.Limit))

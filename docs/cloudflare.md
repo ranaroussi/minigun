@@ -55,7 +55,7 @@ If you bind to a custom domain (recommended), update the `routes` block in `work
 | `MAILGUN_REGION`     | no       | `us`                               | `us` or `eu`. Selects the Mailgun API base. |
 | `MAILGUN_API_BASE`   | no       | derived from region                | Explicit override for the API base URL. |
 | `REDIRECT_URL`       | no       | —                                  | Where to 302-redirect visitors who hit `GET /` in a browser. Leave unset for a plain 404. |
-| `EVENTS_ARCHIVE_ENABLED` | no   | `false`                            | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/recipients`, `/contacts/{id}/engagement`). Schema lands dormant; flip to `true` to start collecting. |
+| `EVENTS_ARCHIVE_ENABLED` | no   | `false`                            | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/recipients`, `/send/{id}/clicks`, `/contacts/{id}/engagement`). Schema lands dormant; flip to `true` to start collecting. |
 | `LIST_HYGIENE_AUTO_PRUNE_ENABLED` | no | `false`                  | When `true`, the engagement-based prune executor runs once per day against every list. Manual `POST /lists/{list}/prune` works independently of this flag. Persistent daily throttle via the `worker_state` D1 table — re-deploys can't double-fire. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_COUNT` | no | `20`                    | Auto-prune contacts whose `messages_since_last_engagement >= N`. Set to `0` to disable this criterion in the cron. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_RECENCY_DAYS` | no | `180`            | Auto-prune contacts whose last open/click is older than N days. Set to `0` to disable. |

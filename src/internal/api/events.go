@@ -70,6 +70,71 @@ func (s *Server) handleListSendRecipients(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleListSendClicks — GET /send/{id}/clicks.
+//
+// Returns the per-URL click rollup for a send (one row per
+// (contact, canonical url): first/last click + click count),
+// keyset-paginated over the composite (contact_id, url).
+//
+// Query params:
+//   limit   — page size (default 100, max 500)
+//   cursor  — opaque cursor from a previous page
+//
+// Response: { items: [...], next_cursor: "..." }.
+func (s *Server) handleListSendClicks(w http.ResponseWriter, r *http.Request) {
+	sendID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if sendID == "" {
+		writeError(w, http.StatusBadRequest, "send id required")
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	// Cursor packs the last (contact_id, url) of the previous page as
+	// "contact_id\nurl", base64-encoded to stay opaque. contact_id (c_*)
+	// never contains a newline, so the first \n is an unambiguous split.
+	afterContactID, afterURL := "", ""
+	if cur := q.Get("cursor"); cur != "" {
+		pad := cur
+		if rem := len(pad) % 4; rem != 0 {
+			pad += strings.Repeat("=", 4-rem)
+		}
+		raw, err := base64.URLEncoding.DecodeString(pad)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid cursor")
+			return
+		}
+		parts := strings.SplitN(string(raw), "\n", 2)
+		afterContactID = parts[0]
+		if len(parts) == 2 {
+			afterURL = parts[1]
+		}
+	}
+	rows, err := s.store.ListSendClicks(r.Context(), store.ListSendClicksParams{
+		SendID:         sendID,
+		AfterContactID: afterContactID,
+		AfterURL:       afterURL,
+		Limit:          limit,
+	})
+	if err != nil {
+		s.log.Error("list send clicks", "send_id", sendID, "err", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp := map[string]any{"items": rows}
+	if len(rows) == limit {
+		last := rows[len(rows)-1]
+		packed := last.ContactID + "\n" + last.URL
+		resp["next_cursor"] = strings.TrimRight(base64.URLEncoding.EncodeToString([]byte(packed)), "=")
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handlePruneList — POST /lists/{list}/prune
 //
 // Body shape:

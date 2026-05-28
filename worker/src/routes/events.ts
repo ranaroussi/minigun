@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { Env } from '../env';
 import {
   listContactEngagement,
+  listSendClicks,
   listSendRecipients,
   resolveContactID,
 } from '../store/events';
@@ -46,6 +47,58 @@ export function mountEvents(app: Hono<{ Bindings: Env }>) {
     if (items.length === limit) {
       const last = items[items.length - 1]!;
       const b64 = btoa(last.contact_id).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+      resp.next_cursor = b64;
+    }
+    return c.json(resp);
+  });
+
+  // GET /send/{id}/clicks?limit=&cursor=
+  //
+  // Per-URL click rollup for a send (one row per contact + clicked link),
+  // keyset-paginated over the composite (contact_id, url). Cursor packs
+  // "contact_id\nurl", base64url-encoded.
+  app.get('/send/:id/clicks', async (c) => {
+    const sendID = c.req.param('id');
+    if (!sendID) return c.json({ error: 'send id required' }, 400);
+
+    const limitRaw = c.req.query('limit');
+    let limit = limitRaw ? parseInt(limitRaw, 10) : 100;
+    if (!Number.isFinite(limit) || limit <= 0) limit = 100;
+    if (limit > 500) limit = 500;
+
+    let afterContactID = '';
+    let afterURL = '';
+    const cursorRaw = c.req.query('cursor');
+    if (cursorRaw) {
+      let b64 = cursorRaw.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      let decoded: string;
+      try {
+        decoded = atob(b64);
+      } catch {
+        return c.json({ error: 'invalid cursor' }, 400);
+      }
+      const nl = decoded.indexOf('\n');
+      if (nl === -1) {
+        afterContactID = decoded;
+      } else {
+        afterContactID = decoded.slice(0, nl);
+        afterURL = decoded.slice(nl + 1);
+      }
+    }
+
+    const items = await listSendClicks(c.env.DB, {
+      sendID,
+      afterContactID: afterContactID || undefined,
+      afterURL,
+      limit,
+    });
+
+    const resp: Record<string, unknown> = { items };
+    if (items.length === limit) {
+      const last = items[items.length - 1]!;
+      const packed = `${last.contact_id}\n${last.url}`;
+      const b64 = btoa(packed).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
       resp.next_cursor = b64;
     }
     return c.json(resp);

@@ -395,6 +395,36 @@ func (c *Client) ListSendRecipients(ctx context.Context, a ListSendRecipientsArg
 	return c.get(ctx, path)
 }
 
+// ListSendClicksArgs narrows what ListSendClicks returns.
+type ListSendClicksArgs struct {
+	SendID string
+	Limit  int    // page size (default 100, max 500)
+	Cursor string // opaque keyset cursor over (contact_id, url) from next_cursor
+}
+
+// ListSendClicks returns one page of the per-URL click rollup for a send
+// (one row per contact + clicked link: canonical url, first/last click,
+// click count), keyset-paginated over (contact_id, url). Requires
+// EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by
+// what they clicked. Response shape is { items: [...], next_cursor?: string }.
+func (c *Client) ListSendClicks(ctx context.Context, a ListSendClicksArgs) (map[string]any, error) {
+	if a.SendID == "" {
+		return nil, errors.New("minigun: SendID is required")
+	}
+	q := url.Values{}
+	if a.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", a.Limit))
+	}
+	if a.Cursor != "" {
+		q.Set("cursor", a.Cursor)
+	}
+	path := "/send/" + enc(a.SendID) + "/clicks"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	return c.get(ctx, path)
+}
+
 // GetContactEngagement returns per-list engagement counters for one
 // contact. idOrEmail accepts a contact id (c_*) or email. listID,
 // when non-empty, narrows to one list (accepts id or slug).

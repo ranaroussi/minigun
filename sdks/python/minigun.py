@@ -321,6 +321,33 @@ class Minigun:
             path += "?" + "&".join(params)
         return self._get(path)
 
+    def list_send_clicks(
+        self,
+        send_id: str,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        """One page of the per-URL click rollup for a send (one row per
+        contact + clicked link: canonical url, first/last click, click
+        count). Requires EVENTS_ARCHIVE_ENABLED on the server. Use to
+        segment an audience by what they clicked.
+
+        Returns {"items": [...], "next_cursor"?: str}. Keyset paginated
+        over (contact_id, url).
+
+        - limit:  page size (default 100, max 500)
+        - cursor: opaque cursor from a previous page's next_cursor
+        """
+        params = []
+        if limit:
+            params.append(f"limit={limit}")
+        if cursor:
+            params.append(f"cursor={_q(cursor)}")
+        path = f"/send/{_q(send_id)}/clicks"
+        if params:
+            path += "?" + "&".join(params)
+        return self._get(path)
+
     def get_contact_engagement(
         self,
         id_or_email: str,

@@ -217,6 +217,10 @@ var (
 	recipientsLimit  int
 	recipientsCursor string
 	recipientsAll    bool
+
+	clicksLimit  int
+	clicksCursor string
+	clicksAll    bool
 )
 
 var sendRecipientsCmd = &cobra.Command{
@@ -261,6 +265,82 @@ Requires EVENTS_ARCHIVE_ENABLED on the server side.`,
 				return resp.Error()
 			}
 			if !recipientsAll {
+				printJSON(resp.Body)
+				return nil
+			}
+			var page struct {
+				Items      []json.RawMessage `json:"items"`
+				NextCursor string            `json:"next_cursor"`
+			}
+			if err := json.Unmarshal(resp.Body, &page); err != nil {
+				return err
+			}
+			if first {
+				fmt.Println("[")
+				first = false
+			}
+			for i, item := range page.Items {
+				if i > 0 {
+					fmt.Println(",")
+				}
+				fmt.Print("  ", string(item))
+			}
+			if page.NextCursor == "" {
+				if len(page.Items) > 0 {
+					fmt.Println()
+				}
+				fmt.Println("]")
+				return nil
+			}
+			if len(page.Items) > 0 {
+				fmt.Println(",")
+			}
+			cursor = page.NextCursor
+		}
+	},
+}
+
+var sendClicksCmd = &cobra.Command{
+	Use:   "clicks <send_id>",
+	Short: "List per-URL clicks for a send (one row per contact + clicked link)",
+	Long: `Returns one row per (recipient, clicked URL) for a send: the canonical
+destination URL, first/last click timestamps, and a click count.
+
+This is the per-link detail behind contact_message_engagement.total_clicks
+— useful for segmenting an audience by what they clicked. URLs are stored
+canonical (scheme+host lowercased, query string and fragment stripped).
+
+Pagination is a keyset cursor over (contact_id, url). Pass --cursor with
+the value from next_cursor, or --all to follow pagination automatically.
+
+Requires EVENTS_ARCHIVE_ENABLED on the server side.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		sendID := args[0]
+		cli := newClient()
+		cursor := clicksCursor
+		first := true
+		for {
+			q := url.Values{}
+			if clicksLimit > 0 {
+				q.Set("limit", fmt.Sprintf("%d", clicksLimit))
+			}
+			if cursor != "" {
+				q.Set("cursor", cursor)
+			}
+			path := fmt.Sprintf("/send/%s/clicks", sendID)
+			if enc := q.Encode(); enc != "" {
+				path += "?" + enc
+			}
+			resp, err := cli.Get(path)
+			if err != nil {
+				return err
+			}
+			if !resp.OK() {
+				printJSON(resp.Body)
+				return resp.Error()
+			}
+			if !clicksAll {
 				printJSON(resp.Body)
 				return nil
 			}
@@ -381,6 +461,10 @@ func init() {
 	sendRecipientsCmd.Flags().StringVar(&recipientsCursor, "cursor", "", "Opaque pagination cursor from a previous page's next_cursor")
 	sendRecipientsCmd.Flags().BoolVar(&recipientsAll, "all", false, "Follow next_cursor and emit all recipients as one JSON array")
 
-	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendStatusCmd, sendStatsCmd, sendRecipientsCmd)
+	sendClicksCmd.Flags().IntVar(&clicksLimit, "limit", 100, "Page size (default 100, max 500)")
+	sendClicksCmd.Flags().StringVar(&clicksCursor, "cursor", "", "Opaque pagination cursor from a previous page's next_cursor")
+	sendClicksCmd.Flags().BoolVar(&clicksAll, "all", false, "Follow next_cursor and emit all click rows as one JSON array")
+
+	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendStatusCmd, sendStatsCmd, sendRecipientsCmd, sendClicksCmd)
 	rootCmd.AddCommand(sendCmd)
 }

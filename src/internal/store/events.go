@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 
@@ -45,6 +46,20 @@ type MessageEngagement struct {
 	UnsubscribedAt  sql.NullInt64
 	RepliedAt       sql.NullInt64
 	UpdatedAt       int64
+}
+
+// MessageClick mirrors a row of contact_message_clicks — the per-URL
+// click rollup for a (send, contact). Timestamps are epoch SECONDS, like
+// MessageEngagement. URL is canonical (see canonicalizeClickURL).
+type MessageClick struct {
+	SendID       string
+	ContactID    string
+	ListID       sql.NullString
+	URL          string
+	FirstClickAt sql.NullInt64
+	LastClickAt  sql.NullInt64
+	TotalClicks  int64
+	UpdatedAt    int64
 }
 
 // ContactEngagement mirrors the row in contact_engagement. Used by both
@@ -210,6 +225,10 @@ type NormalizedEvent struct {
 	Recipient        string
 	EventTimestampMs int64
 	Reason           sql.NullString
+	// URL is the clicked link (only present on "clicked" events). The
+	// pull loop folds it into contact_message_clicks; canonicalization
+	// happens at apply time, not here.
+	URL string
 }
 
 // NormalizeEvent converts a raw Mailgun event into the rollup-ready shape.
@@ -229,6 +248,7 @@ func NormalizeEvent(raw mailgun.RawEvent) (*NormalizedEvent, bool) {
 		Recipient:        strings.ToLower(raw.Recipient),
 		EventTimestampMs: int64(raw.Timestamp * 1000),
 		Reason:           optString(raw.Reason),
+		URL:              raw.URL,
 	}, true
 }
 
@@ -418,6 +438,66 @@ func (s *Store) ApplyEventToMessageEngagement(ctx context.Context, sendID, conta
 	}
 }
 
+// canonicalizeClickURL normalizes a clicked link so the per-URL rollup
+// keys on the destination rather than on per-recipient link noise:
+//   - trim surrounding whitespace
+//   - lowercase scheme + host (path/case preserved — paths can be
+//     case-sensitive)
+//   - drop the query string and fragment
+// On a parse failure (or a scheme-less/host-less string) it returns the
+// trimmed input unchanged so a malformed link still aggregates
+// deterministically instead of being silently dropped.
+func canonicalizeClickURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return s
+	}
+	u.Host = strings.ToLower(u.Host) // url.Parse already lowercases the scheme
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	if u.Path == "" {
+		// Match the Worker's URL.toString(), which renders a bare host
+		// with a trailing slash — keeps the canonical form identical
+		// across runtimes.
+		u.Path = "/"
+	}
+	return u.String()
+}
+
+// ApplyClickToURL folds one "clicked" event into the per-URL rollup
+// (contact_message_clicks). url is canonicalized here; an empty/blank
+// url is a no-op (cme.total_clicks still counts it via
+// ApplyEventToMessageEngagement). eventTsSec is epoch SECONDS.
+//
+// Like the other Apply* methods the counter increments per call; the
+// incremental watermark guarantees each event is seen once, with the same
+// accepted crash/retry drift noted in worker/events_pull.go.
+func (s *Store) ApplyClickToURL(ctx context.Context, sendID, contactID string, listID sql.NullString, rawURL string, eventTsSec int64) error {
+	clickURL := canonicalizeClickURL(rawURL)
+	if clickURL == "" {
+		return nil
+	}
+	now := time.Now().Unix()
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO contact_message_clicks
+		  (send_id, contact_id, list_id, url, first_click_at, last_click_at, total_clicks, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+		ON CONFLICT(send_id, contact_id, url) DO UPDATE SET
+		  first_click_at = MIN(COALESCE(first_click_at, excluded.first_click_at), excluded.first_click_at),
+		  last_click_at  = MAX(COALESCE(last_click_at, 0), excluded.last_click_at),
+		  total_clicks   = total_clicks + 1,
+		  list_id        = COALESCE(list_id, excluded.list_id),
+		  updated_at     = excluded.updated_at`,
+		sendID, contactID, listID, clickURL, eventTsSec, eventTsSec, now)
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // Read endpoints
 // ---------------------------------------------------------------------------
@@ -469,6 +549,58 @@ func (s *Store) ListSendRecipients(ctx context.Context, p ListSendRecipientsPara
 			&m.FirstClickAt, &m.LastClickAt, &m.TotalClicks,
 			&m.Failed, &m.FailedAt, &m.FailureSeverity, &m.FailureReason,
 			&m.ComplainedAt, &m.UnsubscribedAt, &m.RepliedAt, &m.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListSendClicksParams narrows ListSendClicks. The keyset cursor is the
+// composite (AfterContactID, AfterURL) — contact_id is the primary order
+// key, url breaks ties (both come from the previous page's last row).
+type ListSendClicksParams struct {
+	SendID         string
+	AfterContactID string
+	AfterURL       string
+	Limit          int
+}
+
+// ListSendClicks returns one page of per-URL click rows for a send,
+// ordered by (contact_id, url) ASC. Keyset-paginated on that composite
+// (unique within a send via the PK).
+func (s *Store) ListSendClicks(ctx context.Context, p ListSendClicksParams) ([]MessageClick, error) {
+	limit := p.Limit
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	clauses := []string{"send_id = ?"}
+	args := []any{p.SendID}
+	if p.AfterContactID != "" {
+		// Composite keyset: advance past (AfterContactID, AfterURL).
+		clauses = append(clauses, "(contact_id > ? OR (contact_id = ? AND url > ?))")
+		args = append(args, p.AfterContactID, p.AfterContactID, p.AfterURL)
+	}
+	args = append(args, limit)
+	query := `
+		SELECT send_id, contact_id, list_id, url,
+		       first_click_at, last_click_at, total_clicks, updated_at
+		FROM contact_message_clicks
+		WHERE ` + strings.Join(clauses, " AND ") + `
+		ORDER BY contact_id ASC, url ASC
+		LIMIT ?`
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MessageClick
+	for rows.Next() {
+		var m MessageClick
+		if err := rows.Scan(
+			&m.SendID, &m.ContactID, &m.ListID, &m.URL,
+			&m.FirstClickAt, &m.LastClickAt, &m.TotalClicks, &m.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

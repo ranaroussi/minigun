@@ -44,6 +44,16 @@ describe('events routes', () => {
     expect(Array.isArray(body.items)).toBe(true);
   });
 
+  it('GET /send/:id/clicks is mounted and returns an items array', async () => {
+    const app = newApp();
+    const env = { DB: fakeDB() } as unknown as Env;
+
+    const ok = await app.request('http://x/send/snd_test/clicks', {}, env);
+    expect(ok.status).toBe(200);
+    const body = (await ok.json()) as { items: unknown[] };
+    expect(Array.isArray(body.items)).toBe(true);
+  });
+
   it('GET /send/:id/events is no longer mounted (timeline surface removed)', async () => {
     const app = newApp();
     const env = { DB: fakeDB() } as unknown as Env;

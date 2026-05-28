@@ -278,6 +278,25 @@ export class Minigun {
     return this.get(`/send/${enc(sendId)}/recipients${qs ? '?' + qs : ''}`);
   }
 
+  /** One page of the per-URL click rollup for a send (one row per
+   * contact + clicked link: canonical url, first/last click, click
+   * count). Keyset-paginated over (contact_id, url). Requires
+   * EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by
+   * what they clicked. */
+  listSendClicks(
+    sendId: string,
+    opts: {
+      limit?: number;
+      cursor?: string;
+    } = {},
+  ): Promise<unknown> {
+    const q = new URLSearchParams();
+    if (opts.limit && opts.limit > 0) q.set('limit', String(opts.limit));
+    if (opts.cursor) q.set('cursor', opts.cursor);
+    const qs = q.toString();
+    return this.get(`/send/${enc(sendId)}/clicks${qs ? '?' + qs : ''}`);
+  }
+
   /** Per-list engagement counters for one contact. idOrEmail accepts
    * a contact id (c_*) or email. Pass listId to narrow to one list
    * (accepts id or slug). */

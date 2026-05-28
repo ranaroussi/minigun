@@ -333,6 +333,27 @@ class Minigun
     }
 
     /**
+     * One page of the per-URL click rollup for a send (one row per
+     * contact + clicked link: canonical url, first/last click, click
+     * count). Keyset-paginated over (contact_id, url). Requires
+     * EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience
+     * by what they clicked.
+     *
+     * @param array{limit?:int, cursor?:string} $opts
+     */
+    public function listSendClicks(string $sendId, array $opts = []): array
+    {
+        $params = [];
+        if (!empty($opts['limit']))  $params['limit']  = (string) $opts['limit'];
+        if (!empty($opts['cursor'])) $params['cursor'] = $opts['cursor'];
+        $path = '/send/' . rawurlencode($sendId) . '/clicks';
+        if ($params) {
+            $path .= '?' . http_build_query($params);
+        }
+        return $this->get($path);
+    }
+
+    /**
      * Per-list engagement counters for one contact. $idOrEmail accepts
      * a contact id (c_*) or email. $listId narrows to one list (id or slug).
      */

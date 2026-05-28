@@ -290,23 +290,28 @@ Each call is bounded (`limit` defaults to 1000, max 10000). Massive backlogs dra
 
 Backing the engagement-based prune is a local rollup of Mailgun events. Once you set `EVENTS_ARCHIVE_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule (`+0`, `+1h`, `+6h`, `+24h` after a send, then daily for 30 days). Each pull begins at the highest event timestamp the previous pull saw (the send's `created_at` on the first pull) and folds every event straight into two bounded engagement tiers — **no raw per-event rows are stored**:
 
-- **`contact_message_engagement`** — one row per `(send, contact)`: `sent_at`, `delivered_at`, `first/last_open_at` + `total_opens`, `first/last_click_at` + `total_clicks`, plus `failed`/`complained_at`/`unsubscribed_at`. The per-message detail tier (timestamps are epoch seconds). Bounded to ≤ recipients per send.
+- **`contact_message_engagement`** — one row per `(send, contact)`: `sent_at`, `delivered_at`, `first/last_open_at` + `total_opens`, `first/last_click_at` + `total_clicks`, plus `failed`/`complained_at`/`unsubscribed_at`. The per-message detail tier (timestamps are epoch seconds). Bounded to ≤ recipients per send. A row requires a resolvable `contact_id`, so a **list-less transactional single only appears here if its recipient already exists as a contact** — a one-off send to a brand-new address is not back-filled into `contacts` and won't surface in the recipient rollup.
 - **`contact_engagement`** — the per-`(contact, list)` lifetime rollup (`total_delivered`, `total_opens`, `total_clicks`, `messages_since_last_engagement`, `last_engagement_at_ms`). This is what the prune query reads against.
 
 Because a single contact can open or click many times, a raw event log would grow without bound — so MiniGun keeps no such table. The two rollups together hold at most one row per recipient (per send / per list), and that's all the prune logic and the read surface need.
 
-Two read endpoints expose the rollups:
+A third rollup, **`contact_message_clicks`**, records clicks at the per-link grain — one row per `(send, contact, url)` with `first/last_click_at` + a click count. URLs are stored canonical (scheme+host lowercased, query string and fragment stripped) so a destination aggregates regardless of tracking params or per-recipient tokens. It's the data behind audience segmentation ("who clicked this link"); `SUM(total_clicks)` over a `(send, contact)` equals that pair's `contact_message_engagement.total_clicks`.
+
+Read endpoints expose the rollups:
 
 ```bash
 # Per-recipient message engagement for a send (one row per contact):
 minigun send recipients s_xxxx --all > recipients.jsonl
+
+# Per-URL clicks for a send (one row per contact + clicked link):
+minigun send clicks s_xxxx --all > clicks.jsonl
 
 # Lifetime engagement summary for a contact (per-list or global):
 minigun contact engagement alice@example.com
 minigun contact engagement alice@example.com --list newsletter
 ```
 
-Both surfaces are available across HTTP, MCP (`list_send_recipients`, `get_contact_engagement` — both ReadOnly), and the 4 SDKs.
+These surfaces are available across HTTP, MCP (`list_send_recipients`, `list_send_clicks`, `get_contact_engagement` — all ReadOnly), and the 4 SDKs.
 
 Operational properties:
 - **Incremental, no duplicates.** Each pull's window begins strictly after the previous pull's highest event timestamp, so an event is seen once and the per-call counter increments stay correct without any dedup ledger.
@@ -409,7 +414,7 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | `MINIGUN_TURNSTILE_SITE_KEY`   | no       | —                        | Cloudflare Turnstile site key. |
 | `MINIGUN_TURNSTILE_SECRET_KEY` | no       | —                        | Turnstile secret. Required when site key is set. |
 | `MAILGUN_WEBHOOK_SIGNING_KEY`  | no       | —                        | Mailgun "HTTP webhook signing key" (Sending → Webhooks). When set, `/webhooks/mailgun` accepts signed bounce/complaint events and auto-purges contacts. When unset, the endpoint refuses all requests. |
-| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/recipients`, `/contacts/{id}/engagement`). Schema and send-path tagging ship dormant; flip to `true` whenever you're ready to start collecting. |
+| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/recipients`, `/send/{id}/clicks`, `/contacts/{id}/engagement`). Schema and send-path tagging ship dormant; flip to `true` whenever you're ready to start collecting. |
 | `LIST_HYGIENE_AUTO_PRUNE_ENABLED` | no    | `false`                  | When `true`, the engagement-based prune executor runs once per day against every list with the configured thresholds. Manual `POST /lists/{list}/prune` works independently of this flag. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_COUNT` | no   | `20`                     | Auto-prune contacts whose `messages_since_last_engagement >= N`. Set to `0` to disable this criterion in the cron. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_RECENCY_DAYS` | no | `180`              | Auto-prune contacts whose last open/click is older than N days. Set to `0` to disable. |

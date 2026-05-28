@@ -529,6 +529,91 @@ func optNS(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: true}
 }
 
+// ApplyClickToURL canonicalizes the link (lowercase scheme+host, strip
+// query + fragment, preserve path case) and aggregates repeat clicks of
+// the same canonical URL into one row with MIN/MAX timestamps.
+func TestApplyClickToURL_CanonicalizeAndAggregate(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+	listNS := sql.NullString{String: ids.ListID, Valid: true}
+	base := ids.CreatedAt.Unix()
+
+	// Two clicks of the "same" link with different case/query/fragment +
+	// out-of-order timestamps must collapse to one canonical row.
+	if err := st.ApplyClickToURL(ctx, ids.SendID, ids.ContactID, listNS, "HTTPS://Example.COM/Path?utm=1#frag", base+50); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyClickToURL(ctx, ids.SendID, ids.ContactID, listNS, "https://example.com/Path?utm=2", base+10); err != nil {
+		t.Fatal(err)
+	}
+	// Empty URL is a no-op.
+	if err := st.ApplyClickToURL(ctx, ids.SendID, ids.ContactID, listNS, "   ", base+99); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := st.ListSendClicks(ctx, store.ListSendClicksParams{SendID: ids.SendID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("want 1 canonical click row, got %d", len(rows))
+	}
+	r := rows[0]
+	if r.URL != "https://example.com/Path" {
+		t.Fatalf("canonical url: want https://example.com/Path, got %q", r.URL)
+	}
+	if r.TotalClicks != 2 {
+		t.Fatalf("total_clicks: want 2, got %d", r.TotalClicks)
+	}
+	if !r.FirstClickAt.Valid || r.FirstClickAt.Int64 != base+10 {
+		t.Fatalf("first_click_at: want %d (MIN), got %v", base+10, r.FirstClickAt)
+	}
+	if !r.LastClickAt.Valid || r.LastClickAt.Int64 != base+50 {
+		t.Fatalf("last_click_at: want %d (MAX), got %v", base+50, r.LastClickAt)
+	}
+}
+
+// ListSendClicks keyset-paginates over the composite (contact_id, url).
+func TestListSendClicks_Pagination(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+	listNS := sql.NullString{String: ids.ListID, Valid: true}
+	base := ids.CreatedAt.Unix()
+
+	urls := []string{"https://example.com/a", "https://example.com/b", "https://example.com/c"}
+	for _, u := range urls {
+		if err := st.ApplyClickToURL(ctx, ids.SendID, ids.ContactID, listNS, u, base+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page1, err := st.ListSendClicks(ctx, store.ListSendClicksParams{SendID: ids.SendID, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page1: want 2, got %d", len(page1))
+	}
+	last := page1[len(page1)-1]
+	page2, err := st.ListSendClicks(ctx, store.ListSendClicksParams{
+		SendID:         ids.SendID,
+		AfterContactID: last.ContactID,
+		AfterURL:       last.URL,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2) != 1 {
+		t.Fatalf("page2: want 1, got %d", len(page2))
+	}
+	if page2[0].URL <= last.URL {
+		t.Fatalf("keyset broken: page2 url %q not after page1 %q", page2[0].URL, last.URL)
+	}
+}
+
 // worker_state KV helpers — round-trip a key/value, including the
 // int64-typed convenience wrappers used by the auto-prune throttle.
 func TestWorkerStateKV_RoundTrip(t *testing.T) {

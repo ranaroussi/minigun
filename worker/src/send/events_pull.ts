@@ -2,6 +2,7 @@ import { Env, eventsArchiveEnabled } from '../env';
 import { fetchEvents, MailgunAPIError } from '../lib/mailgun';
 import {
   DueEventPullRow,
+  applyClickToURL,
   applyEventToEngagement,
   applyEventToMessageEngagement,
   getSendListID,
@@ -133,6 +134,22 @@ export async function pullEventsForOneSend(
 ): Promise<{ inserted: number; pages: number; frozen: boolean }> {
   const nowMs = Date.now();
   // +1ms makes the lower bound exclusive at storage (ms) granularity.
+  //
+  // Known tradeoffs of the no-ledger design (accepted, not bugs):
+  //  1. Counter drift on crash/retry. Events are folded into the rollups
+  //     before the watermark is persisted below, and the counter UPSERTs
+  //     (total_opens+1, messages_since_last_engagement+1, ...) are not
+  //     idempotent. If this run dies mid-pull or recordEventPullProgress
+  //     fails, the next beat re-applies the events already folded,
+  //     inflating the *counts*. Timestamp fields converge regardless
+  //     (MIN/MAX), so only integer counters drift; recency-based hygiene
+  //     is unaffected.
+  //  2. Same-millisecond skip at the exclusive boundary. The next pull
+  //     resumes at lastEventTs+1ms, so any event sharing that exact ms
+  //     not seen this run — a late, eventually-consistent arrival, or one
+  //     stranded past the MAX_PAGES_PER_SEND cap — is skipped permanently.
+  //     Bounded-probability given ms granularity and the 15k-events/send
+  //     cap; the cost of holding no cursor.
   const beginMs =
     send.events_last_pulled_through_ms !== null
       ? send.events_last_pulled_through_ms + 1
@@ -203,6 +220,18 @@ export async function pullEventsForOneSend(
           listID,
           ev.event,
           ev.event_timestamp_ms,
+        );
+      }
+      // Per-URL click rollup (segmentation). Only "clicked" events carry
+      // a URL; an empty one is a no-op inside applyClickToURL.
+      if (ev.event === 'clicked' && ev.url) {
+        await applyClickToURL(
+          env.DB,
+          send.send_id,
+          contactID,
+          listID,
+          ev.url,
+          Math.floor(ev.event_timestamp_ms / 1000),
         );
       }
     }
