@@ -6,6 +6,8 @@ import {
   getSendListID,
   insertEventIfNew,
   listDueEventPulls,
+  listUnappliedEngagementEvents,
+  markEngagementApplied,
   normalizeEvent,
   recordEventPullError,
   recordEventPullProgress,
@@ -81,6 +83,10 @@ export function nextDueAt(row: {
 // when EVENTS_ARCHIVE_ENABLED is unset (Phase 2+ feature flag).
 export async function pullDueSendEvents(env: Env, limit = 20): Promise<void> {
   if (!eventsArchiveEnabled(env)) return;
+  // Phase 5: replay any raw events whose engagement update was skipped
+  // in a previous tick (insert succeeded but applyEventToEngagement
+  // failed). Bounded so a backlog drains over multiple ticks.
+  await replayUnappliedEngagement(env, 500);
   const now = Date.now();
   let candidates: DueEventPullRow[];
   try {
@@ -145,6 +151,12 @@ export async function pullEventsForOneSend(
   let inserted = 0;
   let pages = 0;
   let pageURL: string | undefined;
+  // Phase 5: highest event timestamp processed in this batch. Used for
+  // conservative watermark advance when MAX_PAGES_PER_SEND caps the
+  // loop with more pages remaining (the H2 fix). The 6h overlap on the
+  // next pull re-fetches anything we missed, and UNIQUE deduplicates.
+  let lastEventTs = 0;
+  let cappedWithMorePages = false;
 
   while (pages < MAX_PAGES_PER_SEND) {
     const page = pageURL
@@ -163,7 +175,8 @@ export async function pullEventsForOneSend(
     for (const raw of page.items) {
       const ev = normalizeEvent(raw, send.from_domain, send.send_id);
       if (!ev) continue;
-      let res: { inserted: boolean; contact_id: string | null };
+      if (ev.event_timestamp_ms > lastEventTs) lastEventTs = ev.event_timestamp_ms;
+      let res: { inserted: boolean; id: string; contact_id: string | null };
       try {
         res = await insertEventIfNew(env.DB, ev);
       } catch (err) {
@@ -175,26 +188,34 @@ export async function pullEventsForOneSend(
       }
       if (!res.inserted) continue;
       inserted++;
-      if (listID && res.contact_id) {
+      const needsEngagement =
+        listID !== null && res.contact_id !== null && isEngagementEvent(ev.event);
+      if (needsEngagement) {
         try {
           await applyEventToEngagement(
             env.DB,
-            res.contact_id,
-            listID,
+            res.contact_id!,
+            listID!,
             ev.event,
             ev.event_timestamp_ms,
           );
         } catch (err) {
-          // Engagement-summary failure is non-fatal — the raw archive
-          // is the source of truth, and we can rebuild contact_engagement
-          // from mailgun_events offline if it ever drifts.
+          // Engagement-summary failure is non-fatal here — the row is
+          // archived and engagement_applied stays 0, so the replay scan
+          // (replayUnappliedEngagement) will reconcile it next tick.
           console.error(
             'events-pull: engagement upsert',
             send.send_id,
             res.contact_id,
             err,
           );
+          continue;
         }
+      }
+      try {
+        await markEngagementApplied(env.DB, res.id);
+      } catch (err) {
+        console.error('events-pull: mark engagement applied', send.send_id, res.id, err);
       }
     }
 
@@ -203,14 +224,38 @@ export async function pullEventsForOneSend(
     const next = page.paging?.next;
     if (!next || next === pageURL) break;
     pageURL = next;
+    if (pages >= MAX_PAGES_PER_SEND) {
+      // About to exit the loop with an outstanding next-page URL —
+      // flag so the watermark advance below stays conservative.
+      cappedWithMorePages = true;
+    }
   }
 
-  const frozen = nowMs >= send.created_at_ms + ARCHIVE_MAX_AGE_MS;
+  // Watermark advance strategy (Phase 5):
+  //   * Normal exhaustion → advance to (endMs - OVERLAP_MS); the 6h
+  //     overlap on the next pull catches late arrivals.
+  //   * Page-cap with more pages → advance only to lastEventTs (highest
+  //     event processed). The next pull picks up from lastEventTs -
+  //     OVERLAP_MS and re-fetches the remaining pages via a new
+  //     begin/end window — UNIQUE deduplicates already-archived events.
+  //   * Page-cap but no events processed (unusual) → keep the existing
+  //     watermark to avoid going backwards.
+  let newThroughMs = endMs - OVERLAP_MS;
+  if (cappedWithMorePages) {
+    if (lastEventTs > 0) {
+      newThroughMs = lastEventTs;
+    } else {
+      newThroughMs = send.events_last_pulled_through_ms ?? send.created_at_ms;
+    }
+  }
+
+  const frozen =
+    !cappedWithMorePages && nowMs >= send.created_at_ms + ARCHIVE_MAX_AGE_MS;
 
   try {
     await recordEventPullProgress(env.DB, send.send_id, {
       last_pulled_at_ms: nowMs,
-      last_pulled_through_ms: endMs - OVERLAP_MS,
+      last_pulled_through_ms: newThroughMs,
       inserted,
       freeze: frozen,
     });
@@ -220,6 +265,81 @@ export async function pullEventsForOneSend(
   }
 
   return { inserted, pages, frozen };
+}
+
+// isEngagementEvent reports whether the event type drives an update to
+// the contact_engagement summary. Used to decide whether to mark
+// engagement_applied=1 directly (non-engagement event) vs. only after
+// the apply step succeeds (engagement event).
+function isEngagementEvent(eventType: string): boolean {
+  return eventType === 'delivered' || eventType === 'opened' || eventType === 'clicked';
+}
+
+// replayUnappliedEngagement scans for raw events whose engagement update
+// never landed (insert succeeded but apply failed in a prior tick). For
+// each it looks up the list_id and re-runs applyEventToEngagement, then
+// flips engagement_applied=1. Bounded per tick so a backlog drains
+// gracefully without saturating the cron.
+//
+// Idempotency: ApplyEventToEngagement's UPSERT semantics with MAX()
+// guards make double-application safe for last_*_at_ms columns, but
+// total_* counters would double-count if naively replayed. The flag is
+// what prevents that — we only replay events explicitly marked 0, and
+// we mark them 1 immediately after the apply call returns.
+export async function replayUnappliedEngagement(
+  env: Env,
+  limit = 500,
+): Promise<void> {
+  let events;
+  try {
+    events = await listUnappliedEngagementEvents(env.DB, limit);
+  } catch (err) {
+    console.error('events-pull: replay list', err);
+    return;
+  }
+  if (events.length === 0) return;
+  for (const ev of events) {
+    if (ev.contact_id === null || !isEngagementEvent(ev.event)) {
+      try {
+        await markEngagementApplied(env.DB, ev.id);
+      } catch (err) {
+        console.error('events-pull: replay mark', ev.id, err);
+      }
+      continue;
+    }
+    let listID: string | null;
+    try {
+      listID = await getSendListID(env.DB, ev.mg_send_id);
+    } catch (err) {
+      console.error('events-pull: replay list_id lookup', ev.id, err);
+      continue;
+    }
+    if (!listID) {
+      try {
+        await markEngagementApplied(env.DB, ev.id);
+      } catch (err) {
+        console.error('events-pull: replay mark', ev.id, err);
+      }
+      continue;
+    }
+    try {
+      await applyEventToEngagement(
+        env.DB,
+        ev.contact_id,
+        listID,
+        ev.event,
+        ev.event_timestamp_ms,
+      );
+    } catch (err) {
+      console.error('events-pull: replay apply', ev.id, err);
+      continue;
+    }
+    try {
+      await markEngagementApplied(env.DB, ev.id);
+    } catch (err) {
+      console.error('events-pull: replay mark', ev.id, err);
+    }
+  }
 }
 
 // Surface for direct on-demand invocation (POST /mailgun/events/pull?send_id=).

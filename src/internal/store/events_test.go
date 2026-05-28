@@ -328,3 +328,264 @@ func TestResolveContactID(t *testing.T) {
 		t.Fatal("expected error for missing contact")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 hardening tests
+// ---------------------------------------------------------------------------
+
+// M5: a `delivered` event with a timestamp older than the contact's
+// last engagement must NOT increment messages_since_last_engagement.
+// Otherwise late-arriving delivered-for-already-opened messages would
+// falsely inflate dormancy and bias prune-by-count toward false positives.
+func TestApplyEventToEngagement_DeliveredOutOfOrderDoesntInflateDormancy(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+
+	tsMs := ids.CreatedAt.UnixMilli()
+	// Establish engagement at T=10000.
+	if err := st.ApplyEventToEngagement(ctx, ids.ContactID, ids.ListID, "delivered", tsMs+1000); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyEventToEngagement(ctx, ids.ContactID, ids.ListID, "opened", tsMs+10000); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := st.ListContactEngagement(ctx, ids.ContactID, ids.ListID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before[0].MessagesSinceLastEngagement != 0 {
+		t.Fatalf("baseline msgs_since_eng: want 0 after open, got %d", before[0].MessagesSinceLastEngagement)
+	}
+
+	// Late delivered at T=5000 (older than the open at T=10000). Must
+	// bump total_delivered but NOT msgs_since_engagement.
+	if err := st.ApplyEventToEngagement(ctx, ids.ContactID, ids.ListID, "delivered", tsMs+5000); err != nil {
+		t.Fatal(err)
+	}
+	after, err := st.ListContactEngagement(ctx, ids.ContactID, ids.ListID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after[0].TotalDelivered != 2 {
+		t.Fatalf("total_delivered: want 2 (both events counted), got %d", after[0].TotalDelivered)
+	}
+	if after[0].MessagesSinceLastEngagement != 0 {
+		t.Fatalf("msgs_since_eng: want 0 (older delivered should not inflate), got %d", after[0].MessagesSinceLastEngagement)
+	}
+
+	// Sanity: a fresh delivered AFTER the open DOES bump the counter.
+	if err := st.ApplyEventToEngagement(ctx, ids.ContactID, ids.ListID, "delivered", tsMs+15000); err != nil {
+		t.Fatal(err)
+	}
+	final, err := st.ListContactEngagement(ctx, ids.ContactID, ids.ListID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final[0].MessagesSinceLastEngagement != 1 {
+		t.Fatalf("msgs_since_eng after fresh delivered: want 1, got %d", final[0].MessagesSinceLastEngagement)
+	}
+}
+
+// M6: events insert with engagement_applied = 0; MarkEngagementApplied
+// flips to 1; ListUnappliedEngagementEvents returns only un-applied rows.
+// The replay scanner relies on this contract.
+func TestEngagementAppliedFlag_RoundTrip(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+
+	ev, ok := store.NormalizeEvent(mailgun.RawEvent{
+		ID:        "mg_e_phase5_1",
+		Event:     "delivered",
+		Timestamp: float64(ids.CreatedAt.Unix() + 10),
+		Recipient: ids.ContactEM,
+		Tags:      []string{ids.SendID},
+	}, ids.Domain, ids.SendID)
+	if !ok {
+		t.Fatal("normalize")
+	}
+	res, err := st.InsertEventIfNew(ctx, ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Inserted || res.ID == "" {
+		t.Fatalf("insert: want Inserted=true with non-empty ID, got %+v", res)
+	}
+
+	// Brand-new row should appear in the un-applied queue.
+	pending, err := st.ListUnappliedEngagementEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending: want 1, got %d", len(pending))
+	}
+	if pending[0].ID != res.ID {
+		t.Fatalf("pending id mismatch: want %s, got %s", res.ID, pending[0].ID)
+	}
+
+	// Marking it applied removes it from the queue.
+	if err := st.MarkEngagementApplied(ctx, res.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = st.ListUnappliedEngagementEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending after mark: want 0, got %d", len(pending))
+	}
+}
+
+// H3: ListDueEventPulls must include sends past the archive window so
+// the worker layer can run a final pull and freeze them. The Phase 2
+// SQL age filter excluded them and left events_archive_complete=0 forever.
+func TestListDueEventPulls_IncludesPastWindow(t *testing.T) {
+	st, d := newTestStore(t)
+	ctx := context.Background()
+	// Seed a fresh-ish send and an extremely old send. Both must appear
+	// in the candidate set so the worker layer can decide what to do.
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO companies (id, slug, name, sending_domain, created_at, updated_at)
+		VALUES ('co_phase5', 'phase5', 'Phase 5', 'mg.x.com', datetime('now'), datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO sends (
+		  id, type, subject, from_header, sending_domain, status,
+		  batch_size, throttle_ms, test_mode, last_subscription_id,
+		  total_recipients, unsubscribe_mode, created_at, updated_at, completed_at
+		) VALUES ('s_old', 'bulk', 'Old', 'r@x.com', 'mg.x.com', 'completed',
+		          500, 1000, 0, 0, 100, 'local',
+		          datetime('now', '-90 days'), datetime('now', '-90 days'), datetime('now', '-90 days'))`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO sends (
+		  id, type, subject, from_header, sending_domain, status,
+		  batch_size, throttle_ms, test_mode, last_subscription_id,
+		  total_recipients, unsubscribe_mode, created_at, updated_at, completed_at
+		) VALUES ('s_new', 'bulk', 'New', 'r@x.com', 'mg.x.com', 'completed',
+		          500, 1000, 0, 0, 100, 'local',
+		          datetime('now', '-1 hour'), datetime('now', '-1 hour'), datetime('now', '-1 hour'))`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ListDueEventPulls(ctx, time.Now().UnixMilli(), 30*24*60*60*1000, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, r := range rows {
+		have[r.SendID] = true
+	}
+	if !have["s_new"] {
+		t.Fatal("missing recent send s_new from candidates")
+	}
+	if !have["s_old"] {
+		t.Fatal("missing past-window send s_old — would never get frozen")
+	}
+}
+
+// H4: PruneList's apply step must be atomic — unsubscribe + audit row
+// in the same tx. Verifies that an apply leaves both pieces of state
+// consistent (and that re-running yields zero candidates, i.e.
+// idempotent).
+func TestPruneList_AtomicUnsubscribeAndAudit(t *testing.T) {
+	st, d := newTestStore(t)
+	ids := seed(t, d)
+	ctx := context.Background()
+
+	// Subscribe the contact and bump dormancy beyond threshold.
+	subAt := time.Now().UTC().Add(-200 * 24 * time.Hour).Format(time.RFC3339Nano)
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO subscriptions (list_id, contact_id, subscribed, subscribed_at, updated_at)
+		VALUES (?, ?, 1, ?, ?)`,
+		ids.ListID, ids.ContactID, subAt, subAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO contact_engagement
+		  (contact_id, list_id, last_delivered_at_ms,
+		   total_delivered, total_opens, total_clicks,
+		   messages_since_last_engagement, updated_at)
+		VALUES (?, ?, ?, 50, 0, 0, 50, datetime('now'))`,
+		ids.ContactID, ids.ListID, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := st.PruneList(ctx, store.ListPruneCandidatesParams{
+		ListID:   ids.ListID,
+		Criteria: store.PruneCriteria{MinMessagesSinceEngagement: 20},
+		Limit:    10,
+	}, false, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Unsubscribed != 1 {
+		t.Fatalf("Unsubscribed: want 1, got %d", res.Unsubscribed)
+	}
+
+	// Subscription row must be flipped.
+	var subscribed int
+	if err := d.QueryRowContext(ctx,
+		`SELECT subscribed FROM subscriptions WHERE list_id = ? AND contact_id = ?`,
+		ids.ListID, ids.ContactID).Scan(&subscribed); err != nil {
+		t.Fatal(err)
+	}
+	if subscribed != 0 {
+		t.Fatalf("subscription not unsubscribed: subscribed=%d", subscribed)
+	}
+
+	// Audit row must exist with the expected reason — proves atomicity.
+	var reason sql.NullString
+	if err := d.QueryRowContext(ctx,
+		`SELECT reason FROM unsubscribe_events WHERE list_id = ? AND contact_id = ?`,
+		ids.ListID, ids.ContactID).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if !reason.Valid || reason.String != "auto-prune-by-count" {
+		t.Fatalf("audit reason: want auto-prune-by-count, got %+v", reason)
+	}
+
+	// Idempotency: re-running finds zero candidates.
+	again, err := st.PruneList(ctx, store.ListPruneCandidatesParams{
+		ListID:   ids.ListID,
+		Criteria: store.PruneCriteria{MinMessagesSinceEngagement: 20},
+		Limit:    10,
+	}, false, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Candidates != 0 || again.Unsubscribed != 0 {
+		t.Fatalf("re-run: want 0/0, got %d/%d", again.Candidates, again.Unsubscribed)
+	}
+}
+
+// worker_state KV helpers — round-trip a key/value, including the
+// int64-typed convenience wrappers used by the auto-prune throttle.
+func TestWorkerStateKV_RoundTrip(t *testing.T) {
+	st, _ := newTestStore(t)
+	ctx := context.Background()
+
+	if _, ok, err := st.GetState(ctx, "missing"); err != nil || ok {
+		t.Fatalf("missing key: want (false, nil), got ok=%v err=%v", ok, err)
+	}
+	if err := st.SetStateInt64(ctx, "auto_prune_last_run_ms", 12345); err != nil {
+		t.Fatal(err)
+	}
+	v, ok, err := st.GetStateInt64(ctx, "auto_prune_last_run_ms")
+	if err != nil || !ok || v != 12345 {
+		t.Fatalf("round-trip: want (12345,true,nil), got (%d,%v,%v)", v, ok, err)
+	}
+	if err := st.SetStateInt64(ctx, "auto_prune_last_run_ms", 67890); err != nil {
+		t.Fatal(err)
+	}
+	v, ok, err = st.GetStateInt64(ctx, "auto_prune_last_run_ms")
+	if err != nil || !ok || v != 67890 {
+		t.Fatalf("overwrite: want (67890,true,nil), got (%d,%v,%v)", v, ok, err)
+	}
+}

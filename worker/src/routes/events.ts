@@ -44,8 +44,13 @@ function decodeCursor(s: string | null | undefined): EventsCursor | null {
 }
 
 export function mountEvents(app: Hono<{ Bindings: Env }>) {
-  // GET /sends/{id}/events?event=&since=&limit=&cursor=
-  app.get('/sends/:id/events', async (c) => {
+  // GET /send/{id}/events?event=&since=&limit=&cursor=
+  //
+  // Singular path matches the Go server (src/internal/api/server.go),
+  // the CLI (cli/cmd/send.go), the MCP tool, and all four SDKs. Phase 3
+  // shipped this Worker route at /sends/:id/events by mistake — Phase 5
+  // realigns it. See review notes for the parity-bug post-mortem.
+  app.get('/send/:id/events', async (c) => {
     const sendID = c.req.param('id');
     if (!sendID) return c.json({ error: 'send id required' }, 400);
 

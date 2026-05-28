@@ -267,16 +267,17 @@ func (s *Store) PruneList(ctx context.Context, p ListPruneCandidatesParams, dryR
 	if dryRun {
 		return result, nil
 	}
-	// Apply: unsubscribe each candidate and write an audit row.
+	// Apply: atomically unsubscribe + audit each candidate in one tx.
+	// Phase 5 fix for H4 — the Phase 4 implementation used two separate
+	// calls (UnsubscribeSubscription, then RecordUnsubscribeEventWithReason),
+	// which left a window where the unsubscribe could commit and the
+	// audit insert could fail, leaving an unsubscribe without a reason
+	// audit row.
 	for _, c := range candidates {
-		sub, err := s.UnsubscribeSubscription(ctx, p.ListID, c.ContactID)
-		if err != nil {
+		if _, _, err := s.UnsubscribeAndAudit(ctx, p.ListID, c.ContactID, c.Email, c.Reason()); err != nil {
 			if errors.Is(err, ErrNotFound) {
 				continue
 			}
-			return result, err
-		}
-		if _, err := s.RecordUnsubscribeEventWithReason(ctx, nil, sub, c.Email, c.Reason()); err != nil {
 			return result, err
 		}
 		result.Unsubscribed++

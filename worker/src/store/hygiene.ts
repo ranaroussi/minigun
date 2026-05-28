@@ -1,5 +1,4 @@
-import { recordUnsubscribeEvent } from './unsubs';
-import { unsubscribeByListAndEmail } from './subscriptions';
+import { unsubscribeAndAudit } from './unsubs';
 import { NotFoundError } from './types';
 
 // ---------------------------------------------------------------------------
@@ -207,15 +206,17 @@ export async function pruneList(
     reason_counts: reasonCounts,
   };
   if (dryRun) return result;
+  // Apply: atomically unsubscribe + audit each candidate via a single
+  // D1 batch. Phase 5 fix for H4 — Phase 4 used recordUnsubscribeEvent
+  // after a separate unsubscribe call, which left a window for orphaned
+  // unsubscribes if the audit insert failed.
   for (const c of candidates) {
-    let sub;
     try {
-      sub = await unsubscribeByListAndEmail(db, p.listID, c.email);
+      await unsubscribeAndAudit(db, p.listID, c.contact_id, c.email, candidateReason(c));
     } catch (err) {
       if (err instanceof NotFoundError) continue;
       throw err;
     }
-    await recordUnsubscribeEvent(db, null, sub, c.email, candidateReason(c));
     result.unsubscribed++;
   }
   return result;

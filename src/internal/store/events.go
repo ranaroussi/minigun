@@ -72,13 +72,23 @@ type ContactEngagement struct {
 // ---------------------------------------------------------------------------
 
 // ListDueEventPulls returns sends that are candidates for the events-pull
-// cron — i.e., non-frozen, non-test sends within the archive window. The
-// burst-vs-daily schedule logic is computed in the worker layer (see
-// worker/events_pull.go nextDueAt); the SQL just narrows candidates so the
-// downstream filter has a small set to look at.
+// cron — i.e., non-frozen, non-test sends with a sending_domain. The
+// burst-vs-daily schedule logic and the past-the-window freeze decision
+// are computed in the worker layer (see worker/events_pull.go nextDueAt);
+// the SQL just narrows candidates so the downstream filter has a small
+// set to look at.
 //
-// nowMs is passed by the caller so tests can pin time deterministically.
+// Intentionally does NOT filter by age — sends past ArchiveMaxAgeMS still
+// need one final pull so the worker layer can set events_archive_complete=1
+// and freeze them. Filtering on age in SQL (Phase 2 bug) left aged-out
+// sends in events_archive_complete=0 forever and silently dropped any
+// tail events from the final window.
+//
+// nowMs is accepted for signature compatibility with callers that still
+// pass it. maxAgeMs is unused.
 func (s *Store) ListDueEventPulls(ctx context.Context, nowMs int64, maxAgeMs int64, limit int) ([]DueEventPullRow, error) {
+	_ = nowMs
+	_ = maxAgeMs
 	if limit <= 0 {
 		limit = 25
 	}
@@ -95,10 +105,9 @@ func (s *Store) ListDueEventPulls(ctx context.Context, nowMs int64, maxAgeMs int
 		  AND test_mode = 0
 		  AND status IN ('completed', 'failed', 'cancelled', 'running')
 		  AND sending_domain != ''
-		  AND CAST(strftime('%s', created_at) AS INTEGER) * 1000 > ?
 		ORDER BY COALESCE(events_last_pulled_at_ms, 0) ASC
 		LIMIT ?`,
-		nowMs-maxAgeMs, limit,
+		limit,
 	)
 	if err != nil {
 		return nil, err
@@ -284,10 +293,12 @@ func NormalizeEvent(raw mailgun.RawEvent, domain, sendID string) (*NormalizedEve
 	return ev, true
 }
 
-// InsertEventResult mirrors the TS side: was the row new, and what
-// contact_id did the email resolve to.
+// InsertEventResult mirrors the TS side: was the row new, what id we
+// assigned to it (only set when Inserted=true), and what contact_id the
+// email resolved to.
 type InsertEventResult struct {
 	Inserted  bool
+	ID        string
 	ContactID sql.NullString
 }
 
@@ -302,16 +313,23 @@ type InsertEventResult struct {
 func (s *Store) InsertEventIfNew(ctx context.Context, ev *NormalizedEvent) (*InsertEventResult, error) {
 	id := ids.NewMailgunEvent()
 	now := nowISO()
+	// New events start at engagement_applied = 0. The caller flips it to
+	// 1 only after ApplyEventToEngagement completes (via
+	// MarkEngagementApplied). If the apply step crashes or fails, the
+	// row stays at 0 and ReplayUnappliedEngagement reconciles it on the
+	// next pull tick. This is the Phase 5 fix for the "insert succeeded
+	// but engagement update failed → permanent drift" risk in Phase 2.
 	res, err := s.DB.ExecContext(ctx, `
 		INSERT OR IGNORE INTO mailgun_events
 		  (id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
 		   event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
-		   url, reason, tags, client_info, geolocation, user_variables, raw_payload, created_at)
+		   url, reason, tags, client_info, geolocation, user_variables, raw_payload,
+		   engagement_applied, created_at)
 		VALUES (
 		  ?, ?, ?, ?, ?, ?, ?,
 		  ?, ?, ?, ?,
 		  (SELECT id FROM contacts WHERE email = ? LIMIT 1),
-		  ?, ?, ?, ?, ?, ?, ?, ?
+		  ?, ?, ?, ?, ?, ?, ?, 0, ?
 		)`,
 		id,
 		ev.Domain,
@@ -339,16 +357,67 @@ func (s *Store) InsertEventIfNew(ctx context.Context, ev *NormalizedEvent) (*Ins
 	}
 	affected, _ := res.RowsAffected()
 	if affected == 0 {
-		return &InsertEventResult{Inserted: false}, nil
+		return &InsertEventResult{Inserted: false, ID: ""}, nil
 	}
 	// Look up the contact_id stamped onto the row we just inserted.
 	var contactID sql.NullString
 	if err := s.DB.QueryRowContext(ctx, `SELECT contact_id FROM mailgun_events WHERE id = ?`, id).Scan(&contactID); err != nil {
 		// We just inserted — this shouldn't fail, but if it does, treat
 		// it as "inserted but contact unresolved" rather than as an error.
-		return &InsertEventResult{Inserted: true}, nil
+		return &InsertEventResult{Inserted: true, ID: id}, nil
 	}
-	return &InsertEventResult{Inserted: true, ContactID: contactID}, nil
+	return &InsertEventResult{Inserted: true, ID: id, ContactID: contactID}, nil
+}
+
+// MarkEngagementApplied flips mailgun_events.engagement_applied to 1 for
+// one event. Called by the pull loop after a successful
+// ApplyEventToEngagement (or immediately for events that don't update
+// engagement). Idempotent.
+func (s *Store) MarkEngagementApplied(ctx context.Context, eventID string) error {
+	_, err := s.DB.ExecContext(ctx, `UPDATE mailgun_events SET engagement_applied = 1 WHERE id = ?`, eventID)
+	return err
+}
+
+// UnappliedEngagementEvent is one row from ListUnappliedEngagementEvents.
+type UnappliedEngagementEvent struct {
+	ID               string
+	MgSendID         string
+	ContactID        sql.NullString
+	Event            string
+	EventTimestampMs int64
+}
+
+// ListUnappliedEngagementEvents returns up to `limit` raw events that
+// were ingested but never had their engagement summary updated. Bounded
+// + ordered by event_timestamp_ms ASC so replay applies events in the
+// same order they originally arrived. The partial index
+// idx_mailgun_events_unapplied makes this scan cheap when the pending
+// set is small (the typical case).
+func (s *Store) ListUnappliedEngagementEvents(ctx context.Context, limit int) ([]UnappliedEngagementEvent, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT id, mg_send_id, contact_id, event, event_timestamp_ms
+		FROM mailgun_events
+		WHERE engagement_applied = 0
+		ORDER BY event_timestamp_ms ASC
+		LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []UnappliedEngagementEvent
+	for rows.Next() {
+		var r UnappliedEngagementEvent
+		if err := rows.Scan(&r.ID, &r.MgSendID, &r.ContactID, &r.Event, &r.EventTimestampMs); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // ---------------------------------------------------------------------------
@@ -362,6 +431,12 @@ func (s *Store) InsertEventIfNew(ctx context.Context, ev *NormalizedEvent) (*Ins
 //
 // Semantics — see the proposal doc:
 //   delivered → bump total_delivered + messages_since_last_engagement
+//               (guarded against out-of-order arrival: msgs_since_eng
+//               only increments when the delivered event is NEWER than
+//               the contact's last_engagement_at_ms — otherwise a late
+//               delivered for an already-opened message would falsely
+//               inflate dormancy and bias prune-by-count toward false
+//               positives)
 //   opened    → bump total_opens, RESET messages_since_last_engagement
 //   clicked   → bump total_clicks, RESET messages_since_last_engagement
 //   other     → no-op (the raw row is archived but doesn't move the summary)
@@ -380,7 +455,11 @@ func (s *Store) ApplyEventToEngagement(ctx context.Context, contactID, listID, e
 			ON CONFLICT(contact_id, list_id) DO UPDATE SET
 			  last_delivered_at_ms           = MAX(COALESCE(last_delivered_at_ms, 0), excluded.last_delivered_at_ms),
 			  total_delivered                = total_delivered + 1,
-			  messages_since_last_engagement = messages_since_last_engagement + 1,
+			  messages_since_last_engagement = CASE
+			    WHEN excluded.last_delivered_at_ms > COALESCE(last_engagement_at_ms, 0)
+			    THEN messages_since_last_engagement + 1
+			    ELSE messages_since_last_engagement
+			  END,
 			  updated_at                     = excluded.updated_at`,
 			contactID, listID, eventTsMs, now,
 		)

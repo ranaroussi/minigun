@@ -47,22 +47,23 @@ export type MailgunEvent = {
 // Cron-helper queries
 // ---------------------------------------------------------------------------
 
-// Selects sends whose archive window is open and whose next scheduled pull
-// beat is due. Joined with sends to expose from_domain + created_at_ms in
-// one round-trip. We use COALESCE(events_last_pulled_at_ms, 0) so the
-// "never pulled yet" case sorts first under ASC ordering.
+// Selects non-frozen, non-test sends with a sending_domain. The
+// burst-vs-daily schedule logic AND the past-the-window freeze decision
+// happen in the worker layer (see nextDueAt in send/events_pull.ts).
+// We deliberately do NOT filter by age — sends past ARCHIVE_MAX_AGE_MS
+// still need one final pull so the worker can set
+// events_archive_complete = 1. Filtering on age here (Phase 2 bug) left
+// aged-out sends un-frozen forever and silently dropped tail events.
+//
+// nowMs/maxAgeMs are accepted for signature compatibility but unused.
 export async function listDueEventPulls(
   db: D1Database,
   nowMs: number,
   maxAgeMs: number,
   limit: number,
 ): Promise<DueEventPullRow[]> {
-  // We don't try to express the burst-vs-daily schedule in SQL — that's
-  // computed in nextDueAt() in the worker. The SQL just narrows to
-  // "non-frozen, non-test, within the archive window" candidates and the
-  // worker filters them through nextDueAt(). The partial index
-  // idx_sends_event_pull_due covers (events_last_pulled_at_ms) under the
-  // matching WHERE clause so candidate selection is index-direct.
+  void nowMs;
+  void maxAgeMs;
   const { results } = await db
     .prepare(
       `SELECT
@@ -77,11 +78,10 @@ export async function listDueEventPulls(
          AND test_mode = 0
          AND status IN ('completed', 'failed', 'cancelled', 'running')
          AND sending_domain != ''
-         AND CAST(strftime('%s', created_at) AS INTEGER) * 1000 > ?
        ORDER BY COALESCE(events_last_pulled_at_ms, 0) ASC
        LIMIT ?`,
     )
-    .bind(nowMs - maxAgeMs, limit > 0 ? limit : 25)
+    .bind(limit > 0 ? limit : 25)
     .all<DueEventPullRow>();
   return results ?? [];
 }
@@ -220,24 +220,31 @@ export function normalizeEvent(
 export async function insertEventIfNew(
   db: D1Database,
   ev: NormalizedEvent,
-): Promise<{ inserted: boolean; contact_id: string | null }> {
+): Promise<{ inserted: boolean; id: string; contact_id: string | null }> {
   const id = newMailgunEvent();
   const now = nowISO();
   // SQLite's changes() reports rows affected by the LAST statement on this
   // connection. INSERT OR IGNORE returns 0 changes when the UNIQUE
   // constraint is violated (i.e. duplicate event), 1 when the row was
   // actually new. D1's .meta.changes carries the same value.
+  //
+  // engagement_applied starts at 0 (the column default). Phase 5 added
+  // this flag — the caller flips it to 1 only after a successful
+  // applyEventToEngagement (via markEngagementApplied). If the apply
+  // step crashes or fails, the row stays at 0 and the replay scanner
+  // (replayUnappliedEngagement) reconciles it on the next pull tick.
   const insertResult = await db
     .prepare(
       `INSERT OR IGNORE INTO mailgun_events
          (id, domain, mailgun_event_id, event, severity, recipient, recipient_domain,
           event_timestamp_ms, event_timestamp_iso, message_id, mg_send_id, contact_id,
-          url, reason, tags, client_info, geolocation, user_variables, raw_payload, created_at)
+          url, reason, tags, client_info, geolocation, user_variables, raw_payload,
+          engagement_applied, created_at)
        VALUES (
          ?, ?, ?, ?, ?, ?, ?,
          ?, ?, ?, ?,
          (SELECT id FROM contacts WHERE email = ? LIMIT 1),
-         ?, ?, ?, ?, ?, ?, ?, ?
+         ?, ?, ?, ?, ?, ?, ?, 0, ?
        )`,
     )
     .bind(
@@ -265,7 +272,7 @@ export async function insertEventIfNew(
     .run();
 
   const inserted = (insertResult.meta?.changes ?? 0) > 0;
-  if (!inserted) return { inserted: false, contact_id: null };
+  if (!inserted) return { inserted: false, id: '', contact_id: null };
 
   // Look up the contact_id we just stamped onto the row. Cheaper than a
   // second SELECT against contacts because the row we want is the one
@@ -274,7 +281,51 @@ export async function insertEventIfNew(
     .prepare(`SELECT contact_id FROM mailgun_events WHERE id = ?`)
     .bind(id)
     .first<{ contact_id: string | null }>();
-  return { inserted: true, contact_id: row?.contact_id ?? null };
+  return { inserted: true, id, contact_id: row?.contact_id ?? null };
+}
+
+// Flip engagement_applied=1 for one event. Called by the pull loop after
+// a successful applyEventToEngagement (or immediately for events that
+// don't update engagement, so the replay query doesn't see them). Idempotent.
+export async function markEngagementApplied(
+  db: D1Database,
+  eventID: string,
+): Promise<void> {
+  await db
+    .prepare(`UPDATE mailgun_events SET engagement_applied = 1 WHERE id = ?`)
+    .bind(eventID)
+    .run();
+}
+
+export type UnappliedEngagementEvent = {
+  id: string;
+  mg_send_id: string;
+  contact_id: string | null;
+  event: string;
+  event_timestamp_ms: number;
+};
+
+// Return up to `limit` raw events that were ingested but never had their
+// engagement summary updated. Bounded + ordered ASC by event_timestamp_ms
+// so replay applies events in original arrival order. The partial index
+// idx_mailgun_events_unapplied makes this cheap when the pending set is
+// small (the typical case).
+export async function listUnappliedEngagementEvents(
+  db: D1Database,
+  limit = 500,
+): Promise<UnappliedEngagementEvent[]> {
+  if (limit <= 0) limit = 500;
+  const { results } = await db
+    .prepare(
+      `SELECT id, mg_send_id, contact_id, event, event_timestamp_ms
+       FROM mailgun_events
+       WHERE engagement_applied = 0
+       ORDER BY event_timestamp_ms ASC
+       LIMIT ?`,
+    )
+    .bind(limit)
+    .all<UnappliedEngagementEvent>();
+  return results ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +356,11 @@ export async function applyEventToEngagement(
   const now = nowISO();
   switch (eventType) {
     case 'delivered':
+      // Phase 5 hardening: messages_since_last_engagement only
+      // increments when the delivered event's timestamp is NEWER than
+      // the contact's last engagement. Otherwise a late `delivered` for
+      // an already-opened message would falsely inflate dormancy and
+      // bias prune-by-count toward false positives.
       await db
         .prepare(
           `INSERT INTO contact_engagement
@@ -314,7 +370,11 @@ export async function applyEventToEngagement(
            ON CONFLICT(contact_id, list_id) DO UPDATE SET
              last_delivered_at_ms           = MAX(COALESCE(last_delivered_at_ms, 0), excluded.last_delivered_at_ms),
              total_delivered                = total_delivered + 1,
-             messages_since_last_engagement = messages_since_last_engagement + 1,
+             messages_since_last_engagement = CASE
+               WHEN excluded.last_delivered_at_ms > COALESCE(last_engagement_at_ms, 0)
+               THEN messages_since_last_engagement + 1
+               ELSE messages_since_last_engagement
+             END,
              updated_at                     = excluded.updated_at`,
         )
         .bind(contactID, listID, eventTsMs, now)
