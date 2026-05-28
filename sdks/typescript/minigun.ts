@@ -290,6 +290,40 @@ export class Minigun {
     return this.get(listId ? `${path}?list_id=${encodeURIComponent(listId)}` : path);
   }
 
+  /** Unsubscribe dormant contacts from a list. dryRun defaults to TRUE
+   * server-side — explicitly pass dryRun=false to commit. At least one
+   * criterion must be > 0; multiple criteria are OR'd. Returns
+   * {list_id, dry_run, candidates, unsubscribed, sample, reason_counts}. */
+  pruneList(opts: {
+    list: string;
+    minMessagesSinceEngagement?: number;
+    dormantForDays?: number;
+    noDeliveryForDays?: number;
+    dryRun?: boolean;
+    limit?: number;
+    sampleSize?: number;
+  }): Promise<unknown> {
+    if (!opts.list) throw new Error('minigun: list is required');
+    if (
+      !opts.minMessagesSinceEngagement &&
+      !opts.dormantForDays &&
+      !opts.noDeliveryForDays
+    ) {
+      throw new Error(
+        'minigun: at least one of minMessagesSinceEngagement, dormantForDays, noDeliveryForDays must be > 0',
+      );
+    }
+    const body: Record<string, unknown> = {
+      min_messages_since_engagement: opts.minMessagesSinceEngagement ?? 0,
+      dormant_for_days: opts.dormantForDays ?? 0,
+      no_delivery_for_days: opts.noDeliveryForDays ?? 0,
+    };
+    if (opts.dryRun !== undefined) body.dry_run = opts.dryRun;
+    if (opts.limit) body.limit = opts.limit;
+    if (opts.sampleSize) body.sample_size = opts.sampleSize;
+    return this.post(`/lists/${enc(opts.list)}/prune`, body);
+  }
+
   // ------------------------------------------------------------------
   // Transport
   // ------------------------------------------------------------------

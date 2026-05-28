@@ -5,6 +5,7 @@ import {
   listSendEvents,
   resolveContactID,
 } from '../store/events';
+import { pruneCriteriaHasAny, pruneList } from '../store/hygiene';
 import { resolveList } from '../store/lists';
 import { NotFoundError } from '../store/types';
 
@@ -87,6 +88,64 @@ export function mountEvents(app: Hono<{ Bindings: Env }>) {
       resp.next_cursor = encodeCursor({ t: last.event_timestamp_ms, i: last.id });
     }
     return c.json(resp);
+  });
+
+  // POST /lists/{list}/prune — list-hygiene executor.
+  //
+  // Body: {
+  //   min_messages_since_engagement?: number,
+  //   dormant_for_days?: number,
+  //   no_delivery_for_days?: number,
+  //   dry_run?: boolean,   // defaults to TRUE — fail-safe
+  //   limit?: number,
+  //   sample_size?: number
+  // }
+  // Returns: { list_id, dry_run, candidates, unsubscribed, sample, reason_counts }.
+  app.post('/lists/:list/prune', async (c) => {
+    const listKey = c.req.param('list');
+    let list;
+    try {
+      list = await resolveList(c.env.DB, listKey);
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: 'list not found' }, 404);
+      throw err;
+    }
+    const body = await c.req.json<{
+      min_messages_since_engagement?: number;
+      dormant_for_days?: number;
+      no_delivery_for_days?: number;
+      dry_run?: boolean;
+      limit?: number;
+      sample_size?: number;
+    }>().catch(() => null);
+    if (!body) return c.json({ error: 'invalid JSON' }, 400);
+
+    // dry_run defaults to TRUE — operators must opt IN to destructive mode.
+    const dryRun = body.dry_run === false ? false : true;
+    const dayMs = 24 * 60 * 60 * 1000;
+    const criteria = {
+      minMessagesSinceEngagement: body.min_messages_since_engagement,
+      dormantForMs: body.dormant_for_days ? body.dormant_for_days * dayMs : undefined,
+      noDeliveryForMs: body.no_delivery_for_days ? body.no_delivery_for_days * dayMs : undefined,
+    };
+    if (!pruneCriteriaHasAny(criteria)) {
+      return c.json(
+        { error: 'at least one of min_messages_since_engagement, dormant_for_days, no_delivery_for_days must be > 0' },
+        400,
+      );
+    }
+    try {
+      const result = await pruneList(
+        c.env.DB,
+        { listID: list.id, criteria, limit: body.limit },
+        dryRun,
+        body.sample_size ?? 25,
+      );
+      return c.json(result);
+    } catch (err) {
+      console.error('prune list', list.id, err);
+      return c.json({ error: (err as Error).message ?? 'internal error' }, 500);
+    }
   });
 
   // GET /contacts/{idOrEmail}/engagement?list_id=

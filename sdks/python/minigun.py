@@ -340,6 +340,46 @@ class Minigun:
             path += f"?list_id={_q(list_id)}"
         return self._get(path)
 
+    def prune_list(
+        self,
+        list_id: str,
+        min_messages_since_engagement: int = 0,
+        dormant_for_days: int = 0,
+        no_delivery_for_days: int = 0,
+        dry_run: Optional[bool] = None,
+        limit: Optional[int] = None,
+        sample_size: Optional[int] = None,
+    ) -> dict:
+        """Unsubscribe dormant contacts from a list. dry_run defaults
+        to TRUE server-side — explicitly pass dry_run=False to commit.
+
+        At least one criterion must be > 0; multiple are OR'd.
+
+        - min_messages_since_engagement: messages_since_last_engagement >= N
+        - dormant_for_days: last open/click older than D days
+        - no_delivery_for_days: never delivered to in the last D days
+
+        Returns {list_id, dry_run, candidates, unsubscribed, sample,
+        reason_counts}.
+        """
+        if min_messages_since_engagement <= 0 and dormant_for_days <= 0 and no_delivery_for_days <= 0:
+            raise ValueError(
+                "at least one of min_messages_since_engagement, "
+                "dormant_for_days, no_delivery_for_days must be > 0"
+            )
+        body: dict = {
+            "min_messages_since_engagement": min_messages_since_engagement,
+            "dormant_for_days": dormant_for_days,
+            "no_delivery_for_days": no_delivery_for_days,
+        }
+        if dry_run is not None:
+            body["dry_run"] = dry_run
+        if limit:
+            body["limit"] = limit
+        if sample_size:
+            body["sample_size"] = sample_size
+        return self._post(f"/lists/{_q(list_id)}/prune", body)
+
     # -----------------------------------------------------------------
     # Transport
     # -----------------------------------------------------------------

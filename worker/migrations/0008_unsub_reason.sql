@@ -1,0 +1,19 @@
+-- ============================================================================
+-- 0008_unsub_reason
+-- ============================================================================
+-- Add a `reason` column to unsubscribe_events so the list-hygiene tooling
+-- can audit WHY each contact was unsubscribed. Values currently in use:
+--   NULL / ''                     — legacy + end-user-initiated unsubscribes
+--   'auto-prune-by-count'         — list-hygiene tool (dormancy exceeded
+--                                   message-since-engagement threshold)
+--   'auto-prune-by-recency'       — list-hygiene tool (no opens or clicks
+--                                   in N days)
+--   'auto-prune-by-no-delivery'   — list-hygiene tool (no delivered events
+--                                   recorded in N days)
+--   'manual'                      — admin-initiated bulk unsubscribe
+--
+-- Fully additive: existing rows get NULL, existing code paths continue to
+-- write NULL. The list-hygiene surface (Phase 4) is the first writer of
+-- non-NULL values.
+-- ============================================================================
+ALTER TABLE unsubscribe_events ADD COLUMN reason TEXT;

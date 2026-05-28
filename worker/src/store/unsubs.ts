@@ -11,21 +11,33 @@ export type UnsubscribeEvent = {
   email: string;
 };
 
+// Audit reason values for the unsubscribe_events.reason column. See the
+// 0008_unsub_reason migration for full semantics.
+export type UnsubReason =
+  | ''
+  | 'auto-prune'
+  | 'auto-prune-by-count'
+  | 'auto-prune-by-recency'
+  | 'auto-prune-by-no-delivery'
+  | 'manual';
+
 export async function recordUnsubscribeEvent(
   db: D1Database,
   sendID: string | null,
   sub: Subscription,
   email: string,
+  reason: UnsubReason = '',
 ): Promise<UnsubscribeEvent> {
   const id = newUnsub();
   const now = nowISO();
+  const reasonVal = reason === '' ? null : reason;
   const insertEvent = db
     .prepare(
       `INSERT INTO unsubscribe_events
-        (id, send_id, subscription_id, list_id, contact_id, email, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        (id, send_id, subscription_id, list_id, contact_id, email, created_at, reason)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(id, sendID, sub.id, sub.list_id, sub.contact_id, email, now);
+    .bind(id, sendID, sub.id, sub.list_id, sub.contact_id, email, now, reasonVal);
   if (sendID) {
     await db.batch([insertEvent, incrementSendStatsUnsubscribedStmt(db, sendID)]);
   } else {

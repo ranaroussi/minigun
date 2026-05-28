@@ -102,6 +102,79 @@ func (s *Server) handleListSendEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handlePruneList — POST /lists/{list}/prune
+//
+// Body shape:
+//   {
+//     "min_messages_since_engagement": int,  // 0 disables this criterion
+//     "dormant_for_days":              int,  // 0 disables this criterion
+//     "no_delivery_for_days":          int,  // 0 disables this criterion
+//     "dry_run":                       bool, // default TRUE — fail-safe
+//     "limit":                         int,  // default 1000, max 10000
+//     "sample_size":                   int   // sample rows to return (default 25)
+//   }
+//
+// Returns: { list_id, dry_run, candidates, unsubscribed, sample, reason_counts }.
+//
+// The endpoint is DESTRUCTIVE when dry_run=false. The default-true dry_run
+// is the safety contract: operators who forget to pass anything get a preview,
+// not a purge.
+func (s *Server) handlePruneList(w http.ResponseWriter, r *http.Request) {
+	listKey := chi.URLParam(r, "list")
+	listID, _, err := s.resolveList(r.Context(), listKey)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "list not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var req struct {
+		MinMessagesSinceEngagement int64 `json:"min_messages_since_engagement"`
+		DormantForDays             int64 `json:"dormant_for_days"`
+		NoDeliveryForDays          int64 `json:"no_delivery_for_days"`
+		// We use *bool so we can distinguish "omitted (default true)" from
+		// "explicitly set to false." Operators must opt-IN to destructive
+		// mode by setting dry_run=false.
+		DryRun     *bool `json:"dry_run"`
+		Limit      int   `json:"limit"`
+		SampleSize int   `json:"sample_size"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	dryRun := true
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+
+	const dayMs int64 = 24 * 60 * 60 * 1000
+	criteria := store.PruneCriteria{
+		MinMessagesSinceEngagement: req.MinMessagesSinceEngagement,
+		DormantForMs:               req.DormantForDays * dayMs,
+		NoDeliveryForMs:            req.NoDeliveryForDays * dayMs,
+	}
+	if !criteria.HasAny() {
+		writeError(w, http.StatusBadRequest, "at least one of min_messages_since_engagement, dormant_for_days, no_delivery_for_days must be > 0")
+		return
+	}
+
+	result, err := s.store.PruneList(r.Context(), store.ListPruneCandidatesParams{
+		ListID:   listID,
+		Criteria: criteria,
+		Limit:    req.Limit,
+	}, dryRun, req.SampleSize)
+	if err != nil {
+		s.log.Error("prune list", "list_id", listID, "err", err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // handleGetContactEngagement — GET /contacts/{idOrEmail}/engagement.
 //
 // Returns the per-list engagement summary for one contact. Optional

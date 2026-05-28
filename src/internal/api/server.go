@@ -66,6 +66,7 @@ func (s *Server) routes() chi.Router {
 	r.Get("/lists/{list}/contacts", s.handleListContacts)
 	r.Post("/lists/{list}/contacts", s.handleAddContact)
 	r.Post("/lists/{list}/unsubscribe", s.handleListUnsubscribe)
+	r.Post("/lists/{list}/prune", s.handlePruneList)
 
 	r.Delete("/contacts/{idOrEmail}", s.handleDeleteContact)
 

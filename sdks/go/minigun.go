@@ -417,6 +417,55 @@ func (c *Client) GetContactEngagement(ctx context.Context, idOrEmail, listID str
 	return c.get(ctx, path)
 }
 
+// PruneListArgs describes a list-hygiene run. At least one of the three
+// criteria fields must be > 0 — pruning a list with no criteria would
+// match every contact and is rejected server-side.
+type PruneListArgs struct {
+	List                       string
+	MinMessagesSinceEngagement int64 // messages_since_last_engagement >= N
+	DormantForDays             int64 // last open/click older than D days
+	NoDeliveryForDays          int64 // never delivered in last D days
+	// DryRun=nil defaults to TRUE on the wire (server-side default). Set
+	// *bool=&false explicitly to commit. The two-step ergonomics are
+	// intentional: callers can't accidentally purge a list by forgetting
+	// to set a field.
+	DryRun     *bool
+	Limit      int
+	SampleSize int
+}
+
+// PruneList unsubscribes dormant contacts from a list based on
+// engagement signals from the events archive. Requires Phase 2
+// (events archive) data on the server.
+//
+// DryRun=nil → server defaults to dry_run=true. Set DryRun to &false
+// explicitly to commit.
+//
+// Returns: {list_id, dry_run, candidates, unsubscribed, sample, reason_counts}.
+func (c *Client) PruneList(ctx context.Context, a PruneListArgs) (map[string]any, error) {
+	if a.List == "" {
+		return nil, errors.New("minigun: List is required")
+	}
+	if a.MinMessagesSinceEngagement <= 0 && a.DormantForDays <= 0 && a.NoDeliveryForDays <= 0 {
+		return nil, errors.New("minigun: at least one of MinMessagesSinceEngagement, DormantForDays, NoDeliveryForDays must be > 0")
+	}
+	body := map[string]any{
+		"min_messages_since_engagement": a.MinMessagesSinceEngagement,
+		"dormant_for_days":              a.DormantForDays,
+		"no_delivery_for_days":          a.NoDeliveryForDays,
+	}
+	if a.DryRun != nil {
+		body["dry_run"] = *a.DryRun
+	}
+	if a.Limit > 0 {
+		body["limit"] = a.Limit
+	}
+	if a.SampleSize > 0 {
+		body["sample_size"] = a.SampleSize
+	}
+	return c.post(ctx, "/lists/"+enc(a.List)+"/prune", body)
+}
+
 // ---------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------

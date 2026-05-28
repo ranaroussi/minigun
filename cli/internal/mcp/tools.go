@@ -26,6 +26,7 @@ func RegisterTools(s *mcpsdk.Server, c *client.Client) {
 	addGetSendStats(s, c)
 	addListSendEvents(s, c)
 	addGetContactEngagement(s, c)
+	addPruneList(s, c)
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -366,6 +367,49 @@ func addListSendEvents(s *mcpsdk.Server, c *client.Client) {
 			}
 		}
 		return passthrough(c.Get(path))
+	})
+}
+
+type pruneListInput struct {
+	List                       string `json:"list" jsonschema:"List id or slug"`
+	MinMessagesSinceEngagement int64  `json:"min_messages_since_engagement,omitempty" jsonschema:"Match contacts with messages_since_last_engagement >= N (0 disables)"`
+	DormantForDays             int64  `json:"dormant_for_days,omitempty" jsonschema:"Match contacts whose last open/click is older than D days (0 disables)"`
+	NoDeliveryForDays          int64  `json:"no_delivery_for_days,omitempty" jsonschema:"Match contacts with no delivered events in the last D days (0 disables)"`
+	DryRun                     *bool  `json:"dry_run,omitempty" jsonschema:"When true, returns candidates without modifying any rows. DEFAULTS TO TRUE — explicitly set false to commit."`
+	Limit                      int    `json:"limit,omitempty" jsonschema:"Max candidates per call (default 1000, max 10000)"`
+	SampleSize                 int    `json:"sample_size,omitempty" jsonschema:"Sample rows to include in the response (default 25)"`
+}
+
+func addPruneList(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "prune_list",
+		Description: "DESTRUCTIVE. Unsubscribes dormant contacts from a list based on engagement signals from the events archive. dry_run defaults to TRUE — set it false explicitly to commit. Criteria are OR'd: a contact matches when ANY enabled threshold is breached. Returns {candidates, unsubscribed, sample, reason_counts}. Requires Phase 2 (events archive) data to be populated.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			DestructiveHint: boolPtr(true),
+			IdempotentHint:  true,
+			Title:           "Prune dormant contacts from a list",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in pruneListInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		body := map[string]any{
+			"min_messages_since_engagement": in.MinMessagesSinceEngagement,
+			"dormant_for_days":              in.DormantForDays,
+			"no_delivery_for_days":          in.NoDeliveryForDays,
+		}
+		// dry_run defaults to TRUE both on the server and on the wire.
+		// When the caller omits it we still send true so the server's
+		// behavior is unambiguous regardless of body coercion paths.
+		if in.DryRun != nil {
+			body["dry_run"] = *in.DryRun
+		} else {
+			body["dry_run"] = true
+		}
+		if in.Limit > 0 {
+			body["limit"] = in.Limit
+		}
+		if in.SampleSize > 0 {
+			body["sample_size"] = in.SampleSize
+		}
+		return passthrough(c.Post("/lists/"+in.List+"/prune", body))
 	})
 }
 
