@@ -171,6 +171,66 @@ minigun send resume s_8Kx29aPqz --force
 
 `--force` is required when any batch is left in `in_flight` state, since Mailgun may already have accepted it; retrying could duplicate-send.
 
+### `minigun send events <id>`
+
+Read the persisted Mailgun events archive for a send. Requires `EVENTS_ARCHIVE_ENABLED=true` on the server. Keyset-paginated over `(event_timestamp_ms, id)`; one event per line when `--all` is set.
+
+```bash
+# First page (default limit 100, max 500):
+minigun send events s_8Kx29aPqz
+
+# Filter by event type:
+minigun send events s_8Kx29aPqz --event opened
+minigun send events s_8Kx29aPqz --event failed
+
+# Only events since a given epoch-ms:
+minigun send events s_8Kx29aPqz --since 1700000000000
+
+# Stream every page as JSON (use --all for large sends — built-in pagination,
+# no need to thread cursors by hand):
+minigun send events s_8Kx29aPqz --all > events.jsonl
+```
+
+The schedule is burst-then-daily for 30 days after a send, then `events_archive_complete` flips to 1 and the cron stops polling — but the local archive remains queryable forever.
+
+### `minigun contact engagement <idOrEmail>`
+
+Per-(contact, list) engagement summary: total delivered/opens/clicks, last open + click timestamps, and `messages_since_last_engagement` (the dormancy counter that powers prune-by-count).
+
+```bash
+# All lists the contact is on:
+minigun contact engagement alice@example.com
+
+# Single list (accepts list slug or id):
+minigun contact engagement alice@example.com --list newsletter
+minigun contact engagement c_PP5AA3MBXS    --list l_8Kx29aPqz
+```
+
+Requires `EVENTS_ARCHIVE_ENABLED=true`. Returns an empty `items` array for contacts who haven't been delivered to yet — rows are sparse on purpose, so a never-emailed contact isn't a false positive for any prune criterion.
+
+### `minigun list prune <list>`
+
+Engagement-based prune. Three OR'd criteria, any combination — but **dry-run is the default**. You must pass `--apply` to commit.
+
+```bash
+# Dry-run: 20 wasted deliveries OR 180 days dormant. Returns candidate
+# count, a sample (default 25), and a reason_counts breakdown.
+minigun list prune newsletter --by-count 20 --by-recency 180
+
+# Dry-run with the third criterion: contacts who've been on the list
+# more than 90 days with zero delivered events.
+minigun list prune newsletter --no-delivery-for 90
+
+# Commit. Writes one unsubscribe_events audit row per pruned contact
+# with the most specific matched reason (count > recency > no-delivery).
+minigun list prune newsletter --by-count 20 --by-recency 180 --apply
+
+# Cap the per-call batch (default 1000, max 10000):
+minigun list prune newsletter --by-recency 365 --limit 500 --apply
+```
+
+`<list>` accepts list slug or id. At least one criterion must be > 0 — calling without any will fail-closed with `400`. Real-runs are bounded; massive backlogs drain over multiple invocations so anomalies surface in the audit log before half the list is gone.
+
 ## End-to-end walkthrough
 
 ```bash
@@ -224,17 +284,21 @@ The `env` block is optional if your MCP client inherits the shell environment. m
 
 **Tools** — every MiniGun operation as an MCP tool. Destructive ones (`send_bulk`, `send_single`, `unsubscribe_contact`, `resume_send`) are tagged so MCP clients can render the appropriate confirmation UI.
 
-| Tool | Maps to |
-|---|---|
-| `health` | `GET /healthz` |
-| `create_list` | `POST /lists` |
-| `add_contact` | `POST /lists/{list}/contacts` |
-| `unsubscribe_contact` | `POST /lists/{list}/unsubscribe` |
-| `send_single` | `POST /send/single` |
-| `send_bulk` | `POST /send/bulk` |
-| `resume_send` | `POST /send/{id}/resume` |
-| `get_send_status` | `GET /send/{id}` |
-| `get_send_stats` | `GET /send/{id}/stats` |
+| Tool | Maps to | Notes |
+|---|---|---|
+| `health` | `GET /healthz` | ReadOnly |
+| `create_list` | `POST /lists` | |
+| `add_contact` | `POST /lists/{list}/contacts` | |
+| `unsubscribe_contact` | `POST /lists/{list}/unsubscribe` | Destructive — confirmation suggested |
+| `delete_contact` | `DELETE /contacts/{idOrEmail}` | Destructive — hard purge |
+| `send_single` | `POST /send/single` | Destructive — sends mail |
+| `send_bulk` | `POST /send/bulk` | Destructive — sends mail |
+| `resume_send` | `POST /send/{id}/resume` | Destructive — sends mail |
+| `get_send_status` | `GET /send/{id}` | ReadOnly |
+| `get_send_stats` | `GET /send/{id}/stats` | ReadOnly |
+| `list_send_events` | `GET /send/{id}/events` | ReadOnly — requires `EVENTS_ARCHIVE_ENABLED=true` |
+| `get_contact_engagement` | `GET /contacts/{idOrEmail}/engagement` | ReadOnly — requires `EVENTS_ARCHIVE_ENABLED=true` |
+| `prune_list` | `POST /lists/{list}/prune` | Destructive — `dry_run` defaults to `true` |
 
 **Resources** — enumeration as MCP resources. Paginated resources accept `?cursor=` and `?limit=` query parameters in the URI.
 

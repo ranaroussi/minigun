@@ -55,6 +55,11 @@ If you bind to a custom domain (recommended), update the `routes` block in `work
 | `MAILGUN_REGION`     | no       | `us`                               | `us` or `eu`. Selects the Mailgun API base. |
 | `MAILGUN_API_BASE`   | no       | derived from region                | Explicit override for the API base URL. |
 | `REDIRECT_URL`       | no       | —                                  | Where to 302-redirect visitors who hit `GET /` in a browser. Leave unset for a plain 404. |
+| `EVENTS_ARCHIVE_ENABLED` | no   | `false`                            | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/events`, `/contacts/{id}/engagement`). Schema lands dormant; flip to `true` to start collecting. |
+| `LIST_HYGIENE_AUTO_PRUNE_ENABLED` | no | `false`                  | When `true`, the engagement-based prune executor runs once per day against every list. Manual `POST /lists/{list}/prune` works independently of this flag. Persistent daily throttle via the `worker_state` D1 table — re-deploys can't double-fire. |
+| `LIST_HYGIENE_AUTO_PRUNE_BY_COUNT` | no | `20`                    | Auto-prune contacts whose `messages_since_last_engagement >= N`. Set to `0` to disable this criterion in the cron. |
+| `LIST_HYGIENE_AUTO_PRUNE_BY_RECENCY_DAYS` | no | `180`            | Auto-prune contacts whose last open/click is older than N days. Set to `0` to disable. |
+| `LIST_HYGIENE_AUTO_PRUNE_NO_DELIVERY_DAYS` | no | `0` (disabled)  | Auto-prune contacts subscribed before the cutoff with no delivered events in N days. Aggressive on new lists — defaults off. |
 
 ### Secrets (`wrangler secret put <NAME>`)
 
@@ -123,6 +128,8 @@ Every minute the worker:
 
 1. Looks for sends in `status IN ('queued', 'running')` with `updated_at < now() - 2min` and pokes them with `POST /send/:id/next`. The atomic batch claim makes a double-call safe. `queued` is included because a worker crash before batch #1 finishes can leave a brand-new send sitting at `queued` forever otherwise.
 2. Walks the `send_stats` table for any send whose `next_fetch_at` is due, pulls fresh per-send aggregates from Mailgun's Metrics API, and persists them. Mailgun retains event logs for only 5 days; this keeps stats permanent in your D1.
+3. If `EVENTS_ARCHIVE_ENABLED=true`, replays any `mailgun_events` rows whose engagement summary update was skipped in a prior tick (insert succeeded but the UPSERT failed), then walks the events-pull schedule for any send whose next beat is due. Schedule is burst-then-daily (`+0`, `+1h`, `+6h`, `+24h`, then daily for 30 days). No-op when the flag is off.
+4. If `LIST_HYGIENE_AUTO_PRUNE_ENABLED=true`, runs the engagement-based prune executor against every list using the configured thresholds. Persistent daily throttle via `worker_state.auto_prune_last_run_ms` — even though the cron itself fires every minute, the prune body refuses to re-run within 24h. No-op when the flag is off.
 
 ### Auto-injected unsubscribe footer
 
@@ -172,7 +179,13 @@ worker/
 ├── migrations/
 │   ├── 0001_init.sql
 │   ├── 0002_companies.sql
-│   └── 0003_send_stats.sql
+│   ├── 0003_send_stats.sql
+│   ├── 0004_sending_domain.sql
+│   ├── 0005_test_mode.sql
+│   ├── 0006_complaint_events.sql
+│   ├── 0007_events_archive.sql
+│   ├── 0008_unsub_reason.sql
+│   └── 0009_phase5.sql
 └── src/
     ├── index.ts          # Hono app, middleware, cron handler, GET / redirect
     ├── env.ts            # Env type + helpers

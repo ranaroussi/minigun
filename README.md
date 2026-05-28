@@ -8,7 +8,8 @@ A tiny self-hosted email sender that sits on top of [Mailgun](https://www.mailgu
 
 - **Markdown templates** with `{{first_name | "there"}}` variable defaults — no MJML, no HTML builder, no second template language.
 - **Crash-safe bulk sends** that survive worker restarts and resume from the last completed batch. Run a 100k-recipient send on a Cloudflare Worker without a single long-running process.
-- **Automatic list hygiene** — hard bounces and spam complaints purge themselves in real time via a signed Mailgun webhook. Your list self-heals.
+- **Automatic list hygiene** — hard bounces and spam complaints purge themselves in real time via a signed Mailgun webhook. Engagement-based prune (Phase 4) unsubscribes dormant contacts on three configurable signals. Your list self-heals.
+- **Per-send event archive** — pulls Mailgun's events API on a burst-then-daily schedule for 30 days, persists every event locally, and maintains a per-(contact, list) engagement summary that survives Mailgun's 5-day event retention. Powers the prune-by-engagement surface and gives you forever-history on opens, clicks, failures, and complaints.
 - **HMAC unsubscribe tokens** — stateless, no DB lookup to verify, no Mailgun suppression-list lock-in. You own the unsub flow forever.
 - **First-class CLI** — install with one `go install`, drive every server operation with sensible flags + `--watch` mode for tailing in-flight sends.
 - **Agent-ready** — MCP server + a deep operator [skill](./skill/minigun/SKILL.md) that teaches AI clients to run campaigns end-to-end (dispatch rules, IP warming, DMARC graduation, anti-patterns to push back on).
@@ -178,9 +179,14 @@ No MJML. No HTML email builder. No second template language. Just Markdown.
 
 ### Automatic list hygiene
 
-The single biggest reason newsletter senders trash their reputation is mailing addresses that no longer exist (hard bounces) or actively flagged the previous send as spam. MiniGun handles both automatically.
+The single biggest reason newsletter senders trash their reputation is mailing addresses that no longer exist (hard bounces), actively flagged the previous send as spam, or keep receiving messages they never engage with. MiniGun handles all three automatically with two complementary mechanisms:
 
-`POST /webhooks/mailgun` is a Mailgun webhook endpoint that listens for the two events that matter:
+1. **Reactive hygiene** — a Mailgun-signed webhook auto-purges hard bounces and spam complaints in real time.
+2. **Proactive hygiene** — a per-(contact, list) engagement archive lets you (or an opt-in daily cron) unsubscribe dormant contacts on three configurable signals.
+
+#### Reactive hygiene — `POST /webhooks/mailgun`
+
+A Mailgun webhook endpoint that listens for the two events that matter:
 
 | Event | Action |
 |---|---|
@@ -236,6 +242,76 @@ minigun contact delete c_PP5AA3MBXS
 The endpoint accepts either the contact id (`c_*`) or the email address, and returns the deleted contact + how many subscriptions were removed. Same semantics as the webhook path — full purge of the contact + all subscriptions + unsubscribe-event audit rows in a single transaction.
 
 Distinct from `contact unsubscribe`, which preserves the subscription row with `subscribed=0` (correct for user-initiated opt-outs — you want to remember they opted out so a future re-import doesn't silently re-subscribe them).
+
+#### Proactive hygiene — engagement-based prune
+
+Hard bounces handle "the address doesn't exist." Complaints handle "this is spam." Engagement-based prune handles the middle ground: addresses that *do* exist, *don't* complain, but ignore everything you send. They cost you reputation faster than the first two combined, because mailbox providers measure engagement, and a low-engagement sender lands in the Promotions tab — or worse.
+
+`POST /lists/{list}/prune` is the operator surface for cleaning that cohort. Three OR'd criteria, any combination, **`dry_run=true` by default**:
+
+| Criterion | What it matches |
+|---|---|
+| `min_messages_since_engagement` | Contacts who received ≥N delivered messages with no open/click since (prune-by-count). |
+| `dormant_for_days` | Contacts whose last open/click is older than D days (prune-by-recency). |
+| `no_delivery_for_days` | Contacts subscribed before the cutoff with no delivered events in the last D days (prune-by-no-delivery — useful for never-engaged cohorts where Mailgun is rejecting at the gateway). |
+
+Run a dry-run first to see the candidate set, then re-run with `--apply` (CLI) or `dry_run: false` (HTTP/SDK) to commit:
+
+```bash
+# Dry-run — defaults to dry, returns candidates + sample + reason_counts.
+minigun list prune weekly --by-count 20 --by-recency 180 --no-delivery-for 90
+
+# Commit — writes one unsubscribe_events audit row per pruned contact
+# with the most specific matched reason (count > recency > no-delivery).
+minigun list prune weekly --by-count 20 --by-recency 180 --apply
+```
+
+Same surface across HTTP, MCP, and all 4 SDKs:
+
+```bash
+# HTTP:
+curl -X POST -H "Authorization: Bearer $MINIGUN_API_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"min_messages_since_engagement":20,"dormant_for_days":180,"dry_run":false}' \
+     https://your-domain/lists/weekly/prune
+
+# MCP:
+#   tool: prune_list
+#   args: { "list": "weekly", "min_messages_since_engagement": 20, "dry_run": false }
+```
+
+Audit-row reason precedence is **count > recency > no-delivery** — the most actionable signal wins when a contact matches multiple criteria.
+
+Each call is bounded (`limit` defaults to 1000, max 10000). Massive backlogs drain over multiple invocations so anomalies surface in the audit log before you've unsubscribed half the list.
+
+**Opt-in daily auto-prune cron.** Set `LIST_HYGIENE_AUTO_PRUNE_ENABLED=true` and at least one threshold env var (defaults: 20 wasted deliveries, 180 days dormant, no-delivery off), and the same prune executor runs once per day against every list. Conservative defaults; persistent daily throttle via `worker_state` so a Worker re-deploy or Go crash-loop can't double-fire.
+
+#### Per-send event archive
+
+Backing the engagement-based prune is a permanent local archive of every Mailgun event. Once you set `EVENTS_ARCHIVE_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule (`+0`, `+1h`, `+6h`, `+24h` after a send, then daily for 30 days), de-duplicates against a `UNIQUE(mailgun_event_id)` constraint, and writes every event to a local `mailgun_events` table with the full forensic payload. A per-(contact, list) `contact_engagement` summary is maintained incrementally — `total_delivered`, `total_opens`, `total_clicks`, `messages_since_last_engagement`, `last_engagement_at_ms` — and that summary is what the prune query reads against.
+
+Two read endpoints expose the archive:
+
+```bash
+# Every event for a send (paginated keyset cursor over (event_timestamp_ms, id)):
+minigun send events s_xxxx --event opened --limit 100
+minigun send events s_xxxx --all > events.jsonl   # stream every page
+
+# Engagement summary for a contact (per-list or global):
+minigun contact engagement alice@example.com
+minigun contact engagement alice@example.com --list newsletter
+```
+
+Both surfaces are available across HTTP, MCP (`list_send_events`, `get_contact_engagement` — both ReadOnly), and the 4 SDKs.
+
+Operational properties:
+- **Idempotent.** Every pull's 6h overlap window re-fetches recent events; `INSERT OR IGNORE` on the UNIQUE event-id deduplicates.
+- **Self-healing on partial failure.** If a raw insert succeeds but the engagement UPSERT fails, the row is left `engagement_applied = 0` and the next pull tick's replay step reconciles it.
+- **Out-of-order safe.** Late `delivered` events for an already-opened message don't inflate dormancy counters (guarded by a `CASE WHEN excluded.last_delivered_at_ms > last_engagement_at_ms` predicate).
+- **Bounded per tick.** 50 pages × 300 events = 15k events/send max; when the cap is hit with more pages, the watermark advances only to the last-processed event timestamp so the next tick covers the gap.
+- **Freezes after 30 days.** Sets `events_archive_complete = 1` so the cron stops polling; the local archive remains queryable forever.
+
+The archive is **opt-in.** Default-off `EVENTS_ARCHIVE_ENABLED` means the schema lands dormant; flip the flag whenever you're ready to start collecting.
 
 ## Architecture
 
@@ -304,6 +380,9 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | POST   | `/send/{id}/resume`                        | Resume a paused / failed send (alias of `/next`). |
 | GET    | `/send/{id}`                               | Send status + progress. |
 | GET    | `/send/{id}/stats`                         | Aggregate stats (DB-backed; falls back to live Mailgun for fresh sends). |
+| GET    | `/send/{id}/events?event=&since=&limit=&cursor=` | Per-send raw event archive (keyset-paginated by `(event_timestamp_ms, id)`). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
+| GET    | `/contacts/{idOrEmail}/engagement?list_id=` | Contact's per-list engagement summary (totals + last open/click + dormancy counter). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
+| POST   | `/lists/{list}/prune`                      | Engagement-based prune. Body accepts `min_messages_since_engagement`, `dormant_for_days`, `no_delivery_for_days`, `dry_run` (default true), `limit`, `sample_size`. |
 | GET    | `/u/{token}`                               | Render the unsubscribe confirmation page. |
 | POST   | `/u/{token}`                               | Perform the unsubscribe (form post or RFC 8058 one-click). |
 | GET    | `/manage/{token}`                          | Render the combined company-wide preferences page. |
@@ -327,6 +406,11 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | `MINIGUN_TURNSTILE_SITE_KEY`   | no       | —                        | Cloudflare Turnstile site key. |
 | `MINIGUN_TURNSTILE_SECRET_KEY` | no       | —                        | Turnstile secret. Required when site key is set. |
 | `MAILGUN_WEBHOOK_SIGNING_KEY`  | no       | —                        | Mailgun "HTTP webhook signing key" (Sending → Webhooks). When set, `/webhooks/mailgun` accepts signed bounce/complaint events and auto-purges contacts. When unset, the endpoint refuses all requests. |
+| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/events`, `/contacts/{id}/engagement`). Schema and send-path tagging ship dormant; flip to `true` whenever you're ready to start collecting. |
+| `LIST_HYGIENE_AUTO_PRUNE_ENABLED` | no    | `false`                  | When `true`, the engagement-based prune executor runs once per day against every list with the configured thresholds. Manual `POST /lists/{list}/prune` works independently of this flag. |
+| `LIST_HYGIENE_AUTO_PRUNE_BY_COUNT` | no   | `20`                     | Auto-prune contacts whose `messages_since_last_engagement >= N`. Set to `0` to disable this criterion in the cron. |
+| `LIST_HYGIENE_AUTO_PRUNE_BY_RECENCY_DAYS` | no | `180`              | Auto-prune contacts whose last open/click is older than N days. Set to `0` to disable. |
+| `LIST_HYGIENE_AUTO_PRUNE_NO_DELIVERY_DAYS` | no | `0` (disabled)    | Auto-prune contacts subscribed before the cutoff with no delivered events in N days. Aggressive on new lists — defaults disabled. |
 
 Per-deployment specifics (D1 binding for the Worker, secrets vs vars, etc.) live in the install docs.
 
