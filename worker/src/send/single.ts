@@ -42,6 +42,14 @@ export async function runSingle(env: Env, sendID: string): Promise<void> {
       testMode: !!snd.test_mode,
       listUnsubscribe: listUnsub,
       listUnsubscribePost: listUnsubPost,
+      // v:minigun_send_id is a redundant safety net for the events archive.
+      // The o:tag above is the primary anchor (it's how the events-pull
+      // cron filters Mailgun's events API by send_id). The user variable
+      // makes the send_id available inside every event's user_variables
+      // blob without re-parsing the tag — useful for richer queries later.
+      customVars: {
+        minigun_send_id: snd.id,
+      },
     });
     await updateSendStatus(env.DB, sendID, 'completed', null);
   } catch (err) {

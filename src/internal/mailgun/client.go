@@ -338,6 +338,130 @@ func (c *Client) PerSendMetrics(ctx context.Context, sendID string, sendCreatedA
 	return &totals, nil
 }
 
+// ---------------------------------------------------------------------------
+// Events API
+// ---------------------------------------------------------------------------
+
+// RawEvent mirrors the subset of Mailgun's per-event JSON the engagement
+// rollups consume. The forensic/variable-shape fields (message,
+// client-info, geolocation, user-variables) are intentionally not decoded
+// — MiniGun keeps no raw event log, only the per-(send, contact) and
+// per-(contact, list) rollups folded from these fields.
+type RawEvent struct {
+	ID        string   `json:"id"`
+	Event     string   `json:"event"`
+	Timestamp float64  `json:"timestamp"`
+	Recipient string   `json:"recipient"`
+	Severity  string   `json:"severity,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+}
+
+// EventsPage is one paginated response from Mailgun's events API. The
+// Paging.Next field carries the cursor URL for the subsequent page; an
+// empty Next or zero items means we've reached the end.
+type EventsPage struct {
+	Items  []RawEvent `json:"items"`
+	Paging struct {
+		Next     string `json:"next,omitempty"`
+		Previous string `json:"previous,omitempty"`
+		First    string `json:"first,omitempty"`
+		Last     string `json:"last,omitempty"`
+	} `json:"paging"`
+}
+
+// FetchEventsParams is the input to a first-page fetch. For follow-up
+// pages, use FetchEventsPage with the cursor URL from the previous
+// page's Paging.Next directly.
+type FetchEventsParams struct {
+	Domain  string
+	Tag     string    // filter by o:tag (i.e. by MiniGun send_id); empty = no filter
+	BeginMs int64     // 0 = no lower bound
+	EndMs   int64     // 0 = no upper bound
+	Limit   int       // 0 = Mailgun's default (300)
+}
+
+// FetchEvents fetches the first page of events for a domain, applying the
+// tag filter and time window if set. The returned EventsPage carries the
+// next-page cursor URL so the caller can paginate via FetchEventsPage.
+func (c *Client) FetchEvents(ctx context.Context, p FetchEventsParams) (*EventsPage, error) {
+	if p.Domain == "" {
+		return nil, fmt.Errorf("mailgun: FetchEvents requires domain")
+	}
+	q := make([]string, 0, 6)
+	q = append(q, "ascending=yes")
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 300
+	}
+	q = append(q, fmt.Sprintf("limit=%d", limit))
+	if p.Tag != "" {
+		q = append(q, "tags="+p.Tag)
+	}
+	// Mailgun accepts begin/end as floats (epoch seconds). Using seconds
+	// rather than RFC 2822 strings is more robust across server timezones.
+	if p.BeginMs > 0 {
+		q = append(q, fmt.Sprintf("begin=%.3f", float64(p.BeginMs)/1000.0))
+	}
+	if p.EndMs > 0 {
+		q = append(q, fmt.Sprintf("end=%.3f", float64(p.EndMs)/1000.0))
+	}
+	url := fmt.Sprintf("%s/v3/%s/events?%s", c.APIBase, p.Domain, strings.Join(q, "&"))
+	return c.fetchEventsURL(ctx, url)
+}
+
+// FetchEventsPage follows a Mailgun-supplied cursor URL (page.Paging.Next)
+// to fetch the next page of events.
+func (c *Client) FetchEventsPage(ctx context.Context, pageURL string) (*EventsPage, error) {
+	if pageURL == "" {
+		return nil, fmt.Errorf("mailgun: FetchEventsPage requires pageURL")
+	}
+	return c.fetchEventsURL(ctx, pageURL)
+}
+
+func (c *Client) fetchEventsURL(ctx context.Context, url string) (*EventsPage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth("api", c.APIKey)
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(body)}
+	}
+	// Decode the wrapper to items + paging, then decode each item
+	// individually so a single malformed event doesn't kill the page.
+	var wrapper struct {
+		Items  []json.RawMessage `json:"items"`
+		Paging struct {
+			Next     string `json:"next,omitempty"`
+			Previous string `json:"previous,omitempty"`
+			First    string `json:"first,omitempty"`
+			Last     string `json:"last,omitempty"`
+		} `json:"paging"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, fmt.Errorf("decode events page: %w", err)
+	}
+	page := &EventsPage{}
+	page.Paging = wrapper.Paging
+	for _, raw := range wrapper.Items {
+		var ev RawEvent
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			continue
+		}
+		page.Items = append(page.Items, ev)
+	}
+	return page, nil
+}
+
 func ParseRetryAfter(h string) time.Duration {
 	if h == "" {
 		return 0

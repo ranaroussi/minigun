@@ -66,6 +66,7 @@ func (s *Server) routes() chi.Router {
 	r.Get("/lists/{list}/contacts", s.handleListContacts)
 	r.Post("/lists/{list}/contacts", s.handleAddContact)
 	r.Post("/lists/{list}/unsubscribe", s.handleListUnsubscribe)
+	r.Post("/lists/{list}/prune", s.handlePruneList)
 
 	r.Delete("/contacts/{idOrEmail}", s.handleDeleteContact)
 
@@ -78,6 +79,10 @@ func (s *Server) routes() chi.Router {
 	r.Post("/send/{id}/next", s.handleResumeSend)
 	r.Get("/send/{id}", s.handleGetSend)
 	r.Get("/send/{id}/stats", s.handleSendStats)
+	r.Get("/send/{id}/recipients", s.handleListSendRecipients)
+	r.Get("/send/{id}/clicks", s.handleListSendClicks)
+
+	r.Get("/contacts/{idOrEmail}/engagement", s.handleGetContactEngagement)
 
 	r.Get("/u/{token}", s.handleUnsubscribeGet)
 	r.Post("/u/{token}", s.handleUnsubscribePost)

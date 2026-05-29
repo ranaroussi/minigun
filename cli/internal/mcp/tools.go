@@ -24,6 +24,10 @@ func RegisterTools(s *mcpsdk.Server, c *client.Client) {
 	addResumeSend(s, c)
 	addGetSendStatus(s, c)
 	addGetSendStats(s, c)
+	addListSendRecipients(s, c)
+	addListSendClicks(s, c)
+	addGetContactEngagement(s, c)
+	addPruneList(s, c)
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -320,5 +324,142 @@ func addGetSendStats(s *mcpsdk.Server, c *client.Client) {
 		},
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in sendIDInput) (*mcpsdk.CallToolResult, struct{}, error) {
 		return passthrough(c.Get("/send/" + in.SendID + "/stats"))
+	})
+}
+
+type listSendRecipientsInput struct {
+	SendID string `json:"send_id" jsonschema:"Send id returned by send_bulk / send_single"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"Page size (default 100, max 500)"`
+	Cursor string `json:"cursor,omitempty" jsonschema:"Opaque keyset cursor (last contact_id) from a previous page's next_cursor"`
+}
+
+func addListSendRecipients(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "list_send_recipients",
+		Description: "Returns the per-recipient message engagement rollup for a send (one row per contact: sent/delivered timestamps, first/last open + click with counts, failure/complaint/unsubscribe state), keyset-paginated by contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server. Use for 'how did each recipient engage with this send' analysis.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			ReadOnlyHint: true,
+			Title:        "List send recipients",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in listSendRecipientsInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		path := "/send/" + in.SendID + "/recipients"
+		params := []string{}
+		if in.Limit > 0 {
+			params = append(params, fmt.Sprintf("limit=%d", in.Limit))
+		}
+		if in.Cursor != "" {
+			params = append(params, "cursor="+in.Cursor)
+		}
+		if len(params) > 0 {
+			path += "?"
+			for i, p := range params {
+				if i > 0 {
+					path += "&"
+				}
+				path += p
+			}
+		}
+		return passthrough(c.Get(path))
+	})
+}
+
+type listSendClicksInput struct {
+	SendID string `json:"send_id" jsonschema:"Send id returned by send_bulk / send_single"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"Page size (default 100, max 500)"`
+	Cursor string `json:"cursor,omitempty" jsonschema:"Opaque keyset cursor over (contact_id, url) from a previous page's next_cursor"`
+}
+
+func addListSendClicks(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "list_send_clicks",
+		Description: "Returns the per-URL click rollup for a send (one row per contact + clicked link: canonical URL, first/last click, click count), keyset-paginated over (contact_id, url). Requires EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by what they clicked.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			ReadOnlyHint: true,
+			Title:        "List send clicks",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in listSendClicksInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		path := "/send/" + in.SendID + "/clicks"
+		params := []string{}
+		if in.Limit > 0 {
+			params = append(params, fmt.Sprintf("limit=%d", in.Limit))
+		}
+		if in.Cursor != "" {
+			params = append(params, "cursor="+in.Cursor)
+		}
+		if len(params) > 0 {
+			path += "?"
+			for i, p := range params {
+				if i > 0 {
+					path += "&"
+				}
+				path += p
+			}
+		}
+		return passthrough(c.Get(path))
+	})
+}
+
+type pruneListInput struct {
+	List                       string `json:"list" jsonschema:"List id or slug"`
+	MinMessagesSinceEngagement int64  `json:"min_messages_since_engagement,omitempty" jsonschema:"Match contacts with messages_since_last_engagement >= N (0 disables)"`
+	DormantForDays             int64  `json:"dormant_for_days,omitempty" jsonschema:"Match contacts whose last open/click is older than D days (0 disables)"`
+	NoDeliveryForDays          int64  `json:"no_delivery_for_days,omitempty" jsonschema:"Match contacts with no delivered events in the last D days (0 disables)"`
+	DryRun                     *bool  `json:"dry_run,omitempty" jsonschema:"When true, returns candidates without modifying any rows. DEFAULTS TO TRUE — explicitly set false to commit."`
+	Limit                      int    `json:"limit,omitempty" jsonschema:"Max candidates per call (default 1000, max 10000)"`
+	SampleSize                 int    `json:"sample_size,omitempty" jsonschema:"Sample rows to include in the response (default 25)"`
+}
+
+func addPruneList(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "prune_list",
+		Description: "DESTRUCTIVE. Unsubscribes dormant contacts from a list based on engagement signals from the events archive. dry_run defaults to TRUE — set it false explicitly to commit. Criteria are OR'd: a contact matches when ANY enabled threshold is breached. Returns {candidates, unsubscribed, sample, reason_counts}. Requires Phase 2 (events archive) data to be populated.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			DestructiveHint: boolPtr(true),
+			IdempotentHint:  true,
+			Title:           "Prune dormant contacts from a list",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in pruneListInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		body := map[string]any{
+			"min_messages_since_engagement": in.MinMessagesSinceEngagement,
+			"dormant_for_days":              in.DormantForDays,
+			"no_delivery_for_days":          in.NoDeliveryForDays,
+		}
+		// dry_run defaults to TRUE both on the server and on the wire.
+		// When the caller omits it we still send true so the server's
+		// behavior is unambiguous regardless of body coercion paths.
+		if in.DryRun != nil {
+			body["dry_run"] = *in.DryRun
+		} else {
+			body["dry_run"] = true
+		}
+		if in.Limit > 0 {
+			body["limit"] = in.Limit
+		}
+		if in.SampleSize > 0 {
+			body["sample_size"] = in.SampleSize
+		}
+		return passthrough(c.Post("/lists/"+in.List+"/prune", body))
+	})
+}
+
+type contactEngagementInput struct {
+	IDOrEmail string `json:"id_or_email" jsonschema:"Contact id (c_*) or email address"`
+	ListID    string `json:"list_id,omitempty" jsonschema:"Optional list id or slug to narrow to one list"`
+}
+
+func addGetContactEngagement(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "get_contact_engagement",
+		Description: "Returns per-list engagement counters for a contact (total_delivered/opens/clicks, last_delivered_at_ms, last_engagement_at_ms, messages_since_last_engagement). Maintained by the events-archive pull. Useful for diagnosing dormancy before pruning and for personalization workflows that key on recent engagement.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			ReadOnlyHint: true,
+			Title:        "Get contact engagement",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in contactEngagementInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		path := "/contacts/" + in.IDOrEmail + "/engagement"
+		if in.ListID != "" {
+			path += "?list_id=" + in.ListID
+		}
+		return passthrough(c.Get(path))
 	})
 }

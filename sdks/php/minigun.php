@@ -312,6 +312,98 @@ class Minigun
         return $this->post($path, []);
     }
 
+    /**
+     * One page of per-recipient message engagement for a send (one row
+     * per contact: sent/delivered timestamps, first/last open + click
+     * with counts, failure/complaint/unsubscribe state). Keyset-paginated
+     * by contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server.
+     *
+     * @param array{limit?:int, cursor?:string} $opts
+     */
+    public function listSendRecipients(string $sendId, array $opts = []): array
+    {
+        $params = [];
+        if (!empty($opts['limit']))  $params['limit']  = (string) $opts['limit'];
+        if (!empty($opts['cursor'])) $params['cursor'] = $opts['cursor'];
+        $path = '/send/' . rawurlencode($sendId) . '/recipients';
+        if ($params) {
+            $path .= '?' . http_build_query($params);
+        }
+        return $this->get($path);
+    }
+
+    /**
+     * One page of the per-URL click rollup for a send (one row per
+     * contact + clicked link: canonical url, first/last click, click
+     * count). Keyset-paginated over (contact_id, url). Requires
+     * EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience
+     * by what they clicked.
+     *
+     * @param array{limit?:int, cursor?:string} $opts
+     */
+    public function listSendClicks(string $sendId, array $opts = []): array
+    {
+        $params = [];
+        if (!empty($opts['limit']))  $params['limit']  = (string) $opts['limit'];
+        if (!empty($opts['cursor'])) $params['cursor'] = $opts['cursor'];
+        $path = '/send/' . rawurlencode($sendId) . '/clicks';
+        if ($params) {
+            $path .= '?' . http_build_query($params);
+        }
+        return $this->get($path);
+    }
+
+    /**
+     * Per-list engagement counters for one contact. $idOrEmail accepts
+     * a contact id (c_*) or email. $listId narrows to one list (id or slug).
+     */
+    public function getContactEngagement(string $idOrEmail, ?string $listId = null): array
+    {
+        $path = '/contacts/' . rawurlencode($idOrEmail) . '/engagement';
+        if ($listId) {
+            $path .= '?list_id=' . rawurlencode($listId);
+        }
+        return $this->get($path);
+    }
+
+    /**
+     * Unsubscribe dormant contacts from a list. dry_run defaults to TRUE
+     * server-side — explicitly pass 'dry_run' => false to commit. At
+     * least one criterion must be > 0; multiple are OR'd.
+     *
+     * Returns ['list_id', 'dry_run', 'candidates', 'unsubscribed',
+     * 'sample', 'reason_counts'].
+     *
+     * @param array{
+     *   min_messages_since_engagement?: int,
+     *   dormant_for_days?: int,
+     *   no_delivery_for_days?: int,
+     *   dry_run?: bool,
+     *   limit?: int,
+     *   sample_size?: int
+     * } $opts
+     */
+    public function pruneList(string $listId, array $opts = []): array
+    {
+        $minMsg = (int) ($opts['min_messages_since_engagement'] ?? 0);
+        $byRec  = (int) ($opts['dormant_for_days'] ?? 0);
+        $noDel  = (int) ($opts['no_delivery_for_days'] ?? 0);
+        if ($minMsg <= 0 && $byRec <= 0 && $noDel <= 0) {
+            throw new \InvalidArgumentException(
+                'at least one of min_messages_since_engagement, dormant_for_days, no_delivery_for_days must be > 0'
+            );
+        }
+        $body = [
+            'min_messages_since_engagement' => $minMsg,
+            'dormant_for_days'              => $byRec,
+            'no_delivery_for_days'          => $noDel,
+        ];
+        if (array_key_exists('dry_run', $opts))   $body['dry_run']    = (bool) $opts['dry_run'];
+        if (!empty($opts['limit']))               $body['limit']       = (int) $opts['limit'];
+        if (!empty($opts['sample_size']))         $body['sample_size'] = (int) $opts['sample_size'];
+        return $this->post('/lists/' . rawurlencode($listId) . '/prune', $body);
+    }
+
     // ---------------------------------------------------------------
     // Transport
     // ---------------------------------------------------------------

@@ -260,6 +260,85 @@ export class Minigun {
     return this.post(path, {});
   }
 
+  /** One page of per-recipient message engagement for a send (one row
+   * per contact: sent/delivered timestamps, first/last open + click with
+   * counts, failure/complaint/unsubscribe state). Keyset-paginated by
+   * contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server. */
+  listSendRecipients(
+    sendId: string,
+    opts: {
+      limit?: number;
+      cursor?: string;
+    } = {},
+  ): Promise<unknown> {
+    const q = new URLSearchParams();
+    if (opts.limit && opts.limit > 0) q.set('limit', String(opts.limit));
+    if (opts.cursor) q.set('cursor', opts.cursor);
+    const qs = q.toString();
+    return this.get(`/send/${enc(sendId)}/recipients${qs ? '?' + qs : ''}`);
+  }
+
+  /** One page of the per-URL click rollup for a send (one row per
+   * contact + clicked link: canonical url, first/last click, click
+   * count). Keyset-paginated over (contact_id, url). Requires
+   * EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by
+   * what they clicked. */
+  listSendClicks(
+    sendId: string,
+    opts: {
+      limit?: number;
+      cursor?: string;
+    } = {},
+  ): Promise<unknown> {
+    const q = new URLSearchParams();
+    if (opts.limit && opts.limit > 0) q.set('limit', String(opts.limit));
+    if (opts.cursor) q.set('cursor', opts.cursor);
+    const qs = q.toString();
+    return this.get(`/send/${enc(sendId)}/clicks${qs ? '?' + qs : ''}`);
+  }
+
+  /** Per-list engagement counters for one contact. idOrEmail accepts
+   * a contact id (c_*) or email. Pass listId to narrow to one list
+   * (accepts id or slug). */
+  getContactEngagement(idOrEmail: string, listId?: string): Promise<unknown> {
+    const path = `/contacts/${enc(idOrEmail)}/engagement`;
+    return this.get(listId ? `${path}?list_id=${encodeURIComponent(listId)}` : path);
+  }
+
+  /** Unsubscribe dormant contacts from a list. dryRun defaults to TRUE
+   * server-side — explicitly pass dryRun=false to commit. At least one
+   * criterion must be > 0; multiple criteria are OR'd. Returns
+   * {list_id, dry_run, candidates, unsubscribed, sample, reason_counts}. */
+  pruneList(opts: {
+    list: string;
+    minMessagesSinceEngagement?: number;
+    dormantForDays?: number;
+    noDeliveryForDays?: number;
+    dryRun?: boolean;
+    limit?: number;
+    sampleSize?: number;
+  }): Promise<unknown> {
+    if (!opts.list) throw new Error('minigun: list is required');
+    if (
+      !opts.minMessagesSinceEngagement &&
+      !opts.dormantForDays &&
+      !opts.noDeliveryForDays
+    ) {
+      throw new Error(
+        'minigun: at least one of minMessagesSinceEngagement, dormantForDays, noDeliveryForDays must be > 0',
+      );
+    }
+    const body: Record<string, unknown> = {
+      min_messages_since_engagement: opts.minMessagesSinceEngagement ?? 0,
+      dormant_for_days: opts.dormantForDays ?? 0,
+      no_delivery_for_days: opts.noDeliveryForDays ?? 0,
+    };
+    if (opts.dryRun !== undefined) body.dry_run = opts.dryRun;
+    if (opts.limit) body.limit = opts.limit;
+    if (opts.sampleSize) body.sample_size = opts.sampleSize;
+    return this.post(`/lists/${enc(opts.list)}/prune`, body);
+  }
+
   // ------------------------------------------------------------------
   // Transport
   // ------------------------------------------------------------------

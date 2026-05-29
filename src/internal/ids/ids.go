@@ -6,13 +6,13 @@ import (
 )
 
 const (
-	PrefixCompany = "co_"
-	PrefixList    = "l_"
-	PrefixContact = "c_"
-	PrefixSend    = "s_"
-	PrefixBatch   = "b_"
-	PrefixUnsub   = "u_"
-	PrefixComplaint = "cmp_"
+	PrefixCompany       = "co_"
+	PrefixList          = "l_"
+	PrefixContact       = "c_"
+	PrefixSend          = "s_"
+	PrefixBatch         = "b_"
+	PrefixUnsub         = "u_"
+	PrefixComplaint     = "cmp_"
 )
 
 var enc = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -25,10 +25,10 @@ func New(prefix string) string {
 	return prefix + enc.EncodeToString(b[:])[:10]
 }
 
-func NewCompany() string { return New(PrefixCompany) }
-func NewList() string    { return New(PrefixList) }
-func NewContact() string { return New(PrefixContact) }
-func NewSend() string    { return New(PrefixSend) }
-func NewBatch() string   { return New(PrefixBatch) }
-func NewUnsub() string   { return New(PrefixUnsub) }
-func NewComplaint() string { return New(PrefixComplaint) }
+func NewCompany() string       { return New(PrefixCompany) }
+func NewList() string          { return New(PrefixList) }
+func NewContact() string       { return New(PrefixContact) }
+func NewSend() string          { return New(PrefixSend) }
+func NewBatch() string         { return New(PrefixBatch) }
+func NewUnsub() string         { return New(PrefixUnsub) }
+func NewComplaint() string     { return New(PrefixComplaint) }

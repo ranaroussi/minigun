@@ -294,6 +294,113 @@ class Minigun:
             path += "?force=1"
         return self._post(path, {})
 
+    def list_send_recipients(
+        self,
+        send_id: str,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        """One page of per-recipient message engagement for a send (one
+        row per contact: sent/delivered timestamps, first/last open + click
+        with counts, failure/complaint/unsubscribe state). Requires
+        EVENTS_ARCHIVE_ENABLED on the server.
+
+        Returns {"items": [...], "next_cursor"?: str}. Keyset paginated by
+        contact_id.
+
+        - limit:  page size (default 100, max 500)
+        - cursor: opaque cursor from a previous page's next_cursor
+        """
+        params = []
+        if limit:
+            params.append(f"limit={limit}")
+        if cursor:
+            params.append(f"cursor={_q(cursor)}")
+        path = f"/send/{_q(send_id)}/recipients"
+        if params:
+            path += "?" + "&".join(params)
+        return self._get(path)
+
+    def list_send_clicks(
+        self,
+        send_id: str,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+    ) -> dict:
+        """One page of the per-URL click rollup for a send (one row per
+        contact + clicked link: canonical url, first/last click, click
+        count). Requires EVENTS_ARCHIVE_ENABLED on the server. Use to
+        segment an audience by what they clicked.
+
+        Returns {"items": [...], "next_cursor"?: str}. Keyset paginated
+        over (contact_id, url).
+
+        - limit:  page size (default 100, max 500)
+        - cursor: opaque cursor from a previous page's next_cursor
+        """
+        params = []
+        if limit:
+            params.append(f"limit={limit}")
+        if cursor:
+            params.append(f"cursor={_q(cursor)}")
+        path = f"/send/{_q(send_id)}/clicks"
+        if params:
+            path += "?" + "&".join(params)
+        return self._get(path)
+
+    def get_contact_engagement(
+        self,
+        id_or_email: str,
+        list_id: Optional[str] = None,
+    ) -> dict:
+        """Per-list engagement counters for one contact. id_or_email
+        accepts a contact id (c_*) or email. Pass list_id to narrow
+        to one list (accepts id or slug)."""
+        path = f"/contacts/{_q(id_or_email)}/engagement"
+        if list_id:
+            path += f"?list_id={_q(list_id)}"
+        return self._get(path)
+
+    def prune_list(
+        self,
+        list_id: str,
+        min_messages_since_engagement: int = 0,
+        dormant_for_days: int = 0,
+        no_delivery_for_days: int = 0,
+        dry_run: Optional[bool] = None,
+        limit: Optional[int] = None,
+        sample_size: Optional[int] = None,
+    ) -> dict:
+        """Unsubscribe dormant contacts from a list. dry_run defaults
+        to TRUE server-side — explicitly pass dry_run=False to commit.
+
+        At least one criterion must be > 0; multiple are OR'd.
+
+        - min_messages_since_engagement: messages_since_last_engagement >= N
+        - dormant_for_days: last open/click older than D days
+        - no_delivery_for_days: never delivered to in the last D days
+
+        Returns {list_id, dry_run, candidates, unsubscribed, sample,
+        reason_counts}.
+        """
+        if min_messages_since_engagement <= 0 and dormant_for_days <= 0 and no_delivery_for_days <= 0:
+            raise ValueError(
+                "at least one of min_messages_since_engagement, "
+                "dormant_for_days, no_delivery_for_days must be > 0"
+            )
+        body: dict = {
+            "min_messages_since_engagement": min_messages_since_engagement,
+            "dormant_for_days": dormant_for_days,
+            "no_delivery_for_days": no_delivery_for_days,
+        }
+        if dry_run is not None:
+            body["dry_run"] = dry_run
+        if limit:
+            body["limit"] = limit
+        if sample_size:
+            body["sample_size"] = sample_size
+        return self._post(f"/lists/{_q(list_id)}/prune", body)
+
     # -----------------------------------------------------------------
     # Transport
     # -----------------------------------------------------------------

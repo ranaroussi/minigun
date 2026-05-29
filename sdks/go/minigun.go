@@ -365,6 +365,129 @@ func (c *Client) ResumeSend(ctx context.Context, sendID string, force bool) (map
 	return c.post(ctx, path, map[string]any{})
 }
 
+// ListSendRecipientsArgs narrows what ListSendRecipients returns.
+type ListSendRecipientsArgs struct {
+	SendID string
+	Limit  int    // page size (default 100, max 500)
+	Cursor string // opaque keyset cursor (last contact_id) from next_cursor
+}
+
+// ListSendRecipients returns one page of per-recipient message
+// engagement for a send (one row per contact: sent/delivered timestamps,
+// first/last open + click with counts, failure/complaint/unsubscribe
+// state), keyset-paginated by contact_id. Requires EVENTS_ARCHIVE_ENABLED
+// on the server. Response shape is { items: [...], next_cursor?: string }.
+func (c *Client) ListSendRecipients(ctx context.Context, a ListSendRecipientsArgs) (map[string]any, error) {
+	if a.SendID == "" {
+		return nil, errors.New("minigun: SendID is required")
+	}
+	q := url.Values{}
+	if a.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", a.Limit))
+	}
+	if a.Cursor != "" {
+		q.Set("cursor", a.Cursor)
+	}
+	path := "/send/" + enc(a.SendID) + "/recipients"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	return c.get(ctx, path)
+}
+
+// ListSendClicksArgs narrows what ListSendClicks returns.
+type ListSendClicksArgs struct {
+	SendID string
+	Limit  int    // page size (default 100, max 500)
+	Cursor string // opaque keyset cursor over (contact_id, url) from next_cursor
+}
+
+// ListSendClicks returns one page of the per-URL click rollup for a send
+// (one row per contact + clicked link: canonical url, first/last click,
+// click count), keyset-paginated over (contact_id, url). Requires
+// EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by
+// what they clicked. Response shape is { items: [...], next_cursor?: string }.
+func (c *Client) ListSendClicks(ctx context.Context, a ListSendClicksArgs) (map[string]any, error) {
+	if a.SendID == "" {
+		return nil, errors.New("minigun: SendID is required")
+	}
+	q := url.Values{}
+	if a.Limit > 0 {
+		q.Set("limit", fmt.Sprintf("%d", a.Limit))
+	}
+	if a.Cursor != "" {
+		q.Set("cursor", a.Cursor)
+	}
+	path := "/send/" + enc(a.SendID) + "/clicks"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	return c.get(ctx, path)
+}
+
+// GetContactEngagement returns per-list engagement counters for one
+// contact. idOrEmail accepts a contact id (c_*) or email. listID,
+// when non-empty, narrows to one list (accepts id or slug).
+func (c *Client) GetContactEngagement(ctx context.Context, idOrEmail, listID string) (map[string]any, error) {
+	if idOrEmail == "" {
+		return nil, errors.New("minigun: idOrEmail is required")
+	}
+	path := "/contacts/" + enc(idOrEmail) + "/engagement"
+	if listID != "" {
+		path += "?list_id=" + url.QueryEscape(listID)
+	}
+	return c.get(ctx, path)
+}
+
+// PruneListArgs describes a list-hygiene run. At least one of the three
+// criteria fields must be > 0 — pruning a list with no criteria would
+// match every contact and is rejected server-side.
+type PruneListArgs struct {
+	List                       string
+	MinMessagesSinceEngagement int64 // messages_since_last_engagement >= N
+	DormantForDays             int64 // last open/click older than D days
+	NoDeliveryForDays          int64 // never delivered in last D days
+	// DryRun=nil defaults to TRUE on the wire (server-side default). Set
+	// *bool=&false explicitly to commit. The two-step ergonomics are
+	// intentional: callers can't accidentally purge a list by forgetting
+	// to set a field.
+	DryRun     *bool
+	Limit      int
+	SampleSize int
+}
+
+// PruneList unsubscribes dormant contacts from a list based on
+// engagement signals from the events archive. Requires Phase 2
+// (events archive) data on the server.
+//
+// DryRun=nil → server defaults to dry_run=true. Set DryRun to &false
+// explicitly to commit.
+//
+// Returns: {list_id, dry_run, candidates, unsubscribed, sample, reason_counts}.
+func (c *Client) PruneList(ctx context.Context, a PruneListArgs) (map[string]any, error) {
+	if a.List == "" {
+		return nil, errors.New("minigun: List is required")
+	}
+	if a.MinMessagesSinceEngagement <= 0 && a.DormantForDays <= 0 && a.NoDeliveryForDays <= 0 {
+		return nil, errors.New("minigun: at least one of MinMessagesSinceEngagement, DormantForDays, NoDeliveryForDays must be > 0")
+	}
+	body := map[string]any{
+		"min_messages_since_engagement": a.MinMessagesSinceEngagement,
+		"dormant_for_days":              a.DormantForDays,
+		"no_delivery_for_days":          a.NoDeliveryForDays,
+	}
+	if a.DryRun != nil {
+		body["dry_run"] = *a.DryRun
+	}
+	if a.Limit > 0 {
+		body["limit"] = a.Limit
+	}
+	if a.SampleSize > 0 {
+		body["sample_size"] = a.SampleSize
+	}
+	return c.post(ctx, "/lists/"+enc(a.List)+"/prune", body)
+}
+
 // ---------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------
