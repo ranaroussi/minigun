@@ -394,4 +394,4 @@ cd worker && npm install        && npx tsc --noEmit && npx wrangler dev
 
 ## License
 
-[MIT](./LICENSE) © 2025 Paperclip AI.
+[MIT](./LICENSE) © 2026 Ran Aroussi
