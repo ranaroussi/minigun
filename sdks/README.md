@@ -30,6 +30,7 @@ The PHP SDK was the first one written and the others mirror its shape deliberate
 | Send status snapshot  | `getSend()`                  | `get_send()`            | `getSend()`              | `GetSend()`              |
 | Send aggregate stats  | `getSendStats()`             | `get_send_stats()`      | `getSendStats()`         | `GetSendStats()`         |
 | Resume paused/failed  | `resumeSend()`               | `resume_send()`         | `resumeSend()`           | `ResumeSend()`           |
+| Cancel/unschedule send| `cancelSend()`               | `cancel_send()`         | `cancelSend()`           | `CancelSend()`           |
 | Send recipient rollup | `listSendRecipients()`       | `list_send_recipients()`| `listSendRecipients()`   | `ListSendRecipients()`   |
 | Send per-URL clicks   | `listSendClicks()`           | `list_send_clicks()`    | `listSendClicks()`       | `ListSendClicks()`       |
 | Contact engagement    | `getContactEngagement()`     | `get_contact_engagement()` | `getContactEngagement()` | `GetContactEngagement()` |

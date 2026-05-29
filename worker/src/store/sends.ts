@@ -35,6 +35,10 @@ export type NewSendParams = {
   unsubscribe_redirect_url?: string | null;
   unsubscribe_external_url?: string | null;
   notify_email?: string | null;
+  // ISO-8601 schedule time. When present and in the future the send is
+  // parked in 'scheduled' status for the cron dispatcher; otherwise it
+  // sends immediately. Already validated/normalized by the route.
+  send_at?: string | null;
 };
 
 export async function createSend(db: D1Database, p: NewSendParams): Promise<Send> {
@@ -43,6 +47,14 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
   const batchSize = p.batch_size && p.batch_size > 0 ? p.batch_size : 500;
   const throttleMs = p.throttle_ms !== undefined && p.throttle_ms >= 0 ? p.throttle_ms : 1000;
   const mode = p.unsubscribe_mode || 'local';
+  // Park the send only when send_at is genuinely in the future; a past or
+  // absent value sends now (status 'queued', send_at NULL).
+  let status: SendStatus = 'queued';
+  let sendAt: string | null = null;
+  if (p.send_at && new Date(p.send_at).getTime() > Date.now()) {
+    status = 'scheduled';
+    sendAt = new Date(p.send_at).toISOString();
+  }
   const insertSend = db
     .prepare(
       `INSERT INTO sends (
@@ -51,8 +63,8 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
         status, batch_size, throttle_ms, test_mode,
         last_subscription_id, max_subscription_id, total_recipients,
         unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
-        notify_email, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        notify_email, send_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       id,
@@ -67,7 +79,7 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
       p.body_html ?? null,
       p.body_text ?? null,
       p.sending_domain,
-      'queued',
+      status,
       batchSize,
       throttleMs,
       p.test_mode ? 1 : 0,
@@ -78,6 +90,7 @@ export async function createSend(db: D1Database, p: NewSendParams): Promise<Send
       p.unsubscribe_redirect_url ?? null,
       p.unsubscribe_external_url ?? null,
       p.notify_email ?? null,
+      sendAt,
       now,
       now,
     );
@@ -90,7 +103,7 @@ const SEND_COLUMNS = `id, type, list_id, recipient_email, subject, from_header, 
        status, batch_size, throttle_ms, test_mode,
        last_subscription_id, max_subscription_id, total_recipients,
        unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
-       notify_email, last_error, created_at, updated_at, completed_at`;
+       notify_email, send_at, last_error, created_at, updated_at, completed_at`;
 
 export async function getSend(db: D1Database, id: string): Promise<Send> {
   const row = await db
@@ -134,6 +147,23 @@ export async function advanceSendCursor(
     .run();
 }
 
+// setSendAudience freezes a bulk send's recipient set (upper subscription-id
+// bound + resolved count). Immediate sends capture this at creation; a
+// scheduled send defers it to dispatch so everyone subscribed up to go-time
+// is included.
+export async function setSendAudience(
+  db: D1Database,
+  id: string,
+  maxSubID: number,
+  total: number,
+): Promise<void> {
+  const now = nowISO();
+  await db
+    .prepare('UPDATE sends SET max_subscription_id = ?, total_recipients = ?, updated_at = ? WHERE id = ?')
+    .bind(maxSubID, total, now, id)
+    .run();
+}
+
 export async function listRunningSends(db: D1Database): Promise<Send[]> {
   const { results } = await db
     .prepare(
@@ -161,6 +191,41 @@ export async function listStuckSends(
   return results;
 }
 
+// Scheduled sends whose send_at has arrived (send_at <= now), oldest first.
+// send_at and the now bound are both fixed-format ISO-8601 UTC, so the
+// lexical string comparison is exactly chronological.
+export async function listDueScheduledSends(db: D1Database, limit = 100): Promise<Send[]> {
+  const now = nowISO();
+  const { results } = await db
+    .prepare(
+      `SELECT ${SEND_COLUMNS} FROM sends
+        WHERE status = 'scheduled' AND send_at IS NOT NULL AND send_at <= ?
+        ORDER BY send_at ASC
+        LIMIT ?`,
+    )
+    .bind(now, limit)
+    .all<Send>();
+  return results;
+}
+
+// Cancel a send, but only from the pre-dispatch states ('scheduled' or
+// 'queued'). The guarded WHERE makes this race-safe against the dispatcher:
+// returns false (zero rows) if the send already started.
+export async function cancelScheduledSend(db: D1Database, id: string): Promise<boolean> {
+  const now = nowISO();
+  const res = await db
+    .prepare(
+      `UPDATE sends SET status = 'cancelled', updated_at = ?, completed_at = ?
+        WHERE id = ? AND status IN ('scheduled', 'queued')`,
+    )
+    .bind(now, now, id)
+    .run();
+  const changes = (res.meta as { changes?: number } | undefined)?.changes ?? 0;
+  if (changes === 0) return false;
+  await markSendCompletedForStatsStmt(db, id).run();
+  return true;
+}
+
 export async function hasInFlightBatch(db: D1Database, sendID: string): Promise<boolean> {
   const row = await db
     .prepare(`SELECT COUNT(*) AS n FROM send_batches WHERE send_id = ? AND status = 'in_flight'`)
@@ -178,7 +243,7 @@ export async function listSends(
   const { results } = await db
     .prepare(
       `SELECT id, type, list_id, recipient_email, subject, status, total_recipients,
-              created_at, updated_at, completed_at
+              send_at, created_at, updated_at, completed_at
          FROM sends
         WHERE (? = '' OR created_at < ? OR (created_at = ? AND id < ?))
         ORDER BY created_at DESC, id DESC

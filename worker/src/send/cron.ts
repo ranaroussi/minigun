@@ -1,5 +1,5 @@
 import { Env, publicURL } from '../env';
-import { listStuckSends } from '../store/sends';
+import { listDueScheduledSends, listStuckSends } from '../store/sends';
 
 const STALE_MS = 2 * 60 * 1000;
 
@@ -20,6 +20,30 @@ export async function sweepStuckSends(env: Env): Promise<void> {
       });
     } catch (err) {
       console.error('cron kick', snd.id, err);
+    }
+  }
+}
+
+// dispatchDueSends picks up future-dated sends whose send_at has arrived and
+// kicks them through the normal step path (POST /send/:id/next), which flips
+// them from 'scheduled' to 'running'. Scheduling granularity is bounded by
+// the cron tick — fine for email.
+export async function dispatchDueSends(env: Env): Promise<void> {
+  let due;
+  try {
+    due = await listDueScheduledSends(env.DB);
+  } catch (err) {
+    console.error('cron list due scheduled sends', err);
+    return;
+  }
+  for (const snd of due) {
+    try {
+      await fetch(`${publicURL(env)}/send/${snd.id}/next`, {
+        method: 'POST',
+        headers: { 'x-internal-secret': env.MINIGUN_INTERNAL_SECRET },
+      });
+    } catch (err) {
+      console.error('cron dispatch scheduled', snd.id, err);
     }
   }
 }

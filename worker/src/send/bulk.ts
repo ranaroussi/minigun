@@ -9,9 +9,10 @@ import {
   advanceSendCursor,
   getSend,
   hasInFlightBatch,
+  setSendAudience,
   updateSendStatus,
 } from '../store/sends';
-import { nextRecipientBatch } from '../store/subscriptions';
+import { countSubscribed, maxSubscriptionID, nextRecipientBatch } from '../store/subscriptions';
 import { buildRecipientVars } from './render';
 
 export type StepResult =
@@ -26,9 +27,20 @@ export async function step(env: Env, sendID: string): Promise<StepResult> {
   if (snd.status !== 'running') {
     await updateSendStatus(env.DB, sendID, 'running', null);
   }
-  if (!snd.list_id || snd.max_subscription_id == null) {
-    await updateSendStatus(env.DB, sendID, 'failed', 'bulk send missing list_id or max_subscription_id');
+  if (!snd.list_id) {
+    await updateSendStatus(env.DB, sendID, 'failed', 'bulk send missing list_id');
     return { state: 'completed' };
+  }
+  // A scheduled send reaches dispatch with no frozen audience: resolve it now
+  // (current max subscription id + count) so every contact subscribed up to
+  // go-time is included, then persist so a crash/resume keeps the same
+  // dispatch-time snapshot.
+  if (snd.max_subscription_id == null) {
+    const resolvedMax = await maxSubscriptionID(env.DB, snd.list_id);
+    const total = await countSubscribed(env.DB, snd.list_id, resolvedMax);
+    await setSendAudience(env.DB, sendID, resolvedMax, total);
+    snd.max_subscription_id = resolvedMax;
+    snd.total_recipients = total;
   }
 
   const recipients = await nextRecipientBatch(

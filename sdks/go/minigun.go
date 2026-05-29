@@ -198,6 +198,9 @@ type SendSingleArgs struct {
 	Domain       string
 	List         string
 	TestMode     bool
+	// SendAt schedules the send for a future RFC3339 time (e.g.
+	// "2026-06-01T09:00:00Z"). Empty sends now. Unschedule with CancelSend.
+	SendAt string
 }
 
 // SendSingle sends a single transactional email. Returns immediately
@@ -238,6 +241,7 @@ func (c *Client) SendSingle(ctx context.Context, args SendSingleArgs) (map[strin
 		"text":      text,
 		"template":  tpl,
 		"test_mode": args.TestMode,
+		"send_at":   args.SendAt,
 	})
 }
 
@@ -266,6 +270,9 @@ type SendBulkArgs struct {
 	UnsubRedir   string
 	UnsubURL     string
 	TestMode     bool
+	// SendAt schedules the send for a future RFC3339 time (e.g.
+	// "2026-06-01T09:00:00Z"). Empty sends now. Unschedule with CancelSend.
+	SendAt string
 }
 
 // SendBulk triggers a bulk send. Returns 202 immediately with a
@@ -338,6 +345,7 @@ func (c *Client) SendBulk(ctx context.Context, args SendBulkArgs) (map[string]an
 		"unsub_redir":  args.UnsubRedir,
 		"unsub_url":    args.UnsubURL,
 		"test_mode":    args.TestMode,
+		"send_at":      args.SendAt,
 	})
 }
 
@@ -363,6 +371,14 @@ func (c *Client) ResumeSend(ctx context.Context, sendID string, force bool) (map
 		path += "?force=1"
 	}
 	return c.post(ctx, path, map[string]any{})
+}
+
+// CancelSend cancels a send that has not started yet (status
+// "scheduled" or "queued"), transitioning it to "cancelled". This is the
+// unschedule path for sends created with SendAt. It returns an error
+// (409) if the send is already running or in a terminal state.
+func (c *Client) CancelSend(ctx context.Context, sendID string) (map[string]any, error) {
+	return c.post(ctx, "/send/"+enc(sendID)+"/cancel", map[string]any{})
 }
 
 // ListSendRecipientsArgs narrows what ListSendRecipients returns.

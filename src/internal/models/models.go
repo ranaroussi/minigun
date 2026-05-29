@@ -52,6 +52,7 @@ type SendStatus string
 
 const (
 	SendStatusQueued    SendStatus = "queued"
+	SendStatusScheduled SendStatus = "scheduled"
 	SendStatusRunning   SendStatus = "running"
 	SendStatusCompleted SendStatus = "completed"
 	SendStatusFailed    SendStatus = "failed"
@@ -90,6 +91,7 @@ type Send struct {
 	UnsubscribeRedirectURL *string         `json:"unsubscribe_redirect_url,omitempty"`
 	UnsubscribeExternalURL *string         `json:"unsubscribe_external_url,omitempty"`
 	NotifyEmail            *string         `json:"notify_email,omitempty"`
+	SendAt                 *time.Time      `json:"send_at,omitempty"`
 	LastError              *string         `json:"last_error,omitempty"`
 	CreatedAt              time.Time       `json:"created_at"`
 	UpdatedAt              time.Time       `json:"updated_at"`

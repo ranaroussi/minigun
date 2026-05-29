@@ -79,6 +79,9 @@ export interface SendSingleArgs {
   domain?: string;
   list?: string;
   testMode?: boolean;
+  /** RFC3339 future time to schedule the send (e.g. "2026-06-01T09:00:00Z").
+   * Omit to send now. Unschedule with cancelSend(). */
+  sendAt?: string;
 }
 
 export interface SendBulkArgs {
@@ -99,6 +102,9 @@ export interface SendBulkArgs {
   unsubRedir?: string;
   unsubUrl?: string;
   testMode?: boolean;
+  /** RFC3339 future time to schedule the send (e.g. "2026-06-01T09:00:00Z").
+   * Omit to send now. Unschedule with cancelSend(). */
+  sendAt?: string;
 }
 
 export class Minigun {
@@ -195,6 +201,7 @@ export class Minigun {
       text: args.text ?? '',
       template: args.template ?? '',
       test_mode: args.testMode ?? false,
+      send_at: args.sendAt ?? '',
     });
   }
 
@@ -238,6 +245,7 @@ export class Minigun {
       unsub_redir: args.unsubRedir ?? '',
       unsub_url: args.unsubUrl ?? '',
       test_mode: args.testMode ?? false,
+      send_at: args.sendAt ?? '',
     });
   }
 
@@ -258,6 +266,14 @@ export class Minigun {
   resumeSend(sendId: string, force = false): Promise<unknown> {
     const path = `/send/${enc(sendId)}/resume${force ? '?force=1' : ''}`;
     return this.post(path, {});
+  }
+
+  /** Cancel a send that has not started yet (status 'scheduled' or
+   * 'queued'), transitioning it to 'cancelled'. This is the unschedule
+   * path for sends created with `sendAt`. Rejects (409) if the send is
+   * already running or in a terminal state. */
+  cancelSend(sendId: string): Promise<unknown> {
+    return this.post(`/send/${enc(sendId)}/cancel`, {});
   }
 
   /** One page of per-recipient message engagement for a send (one row

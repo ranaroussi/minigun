@@ -168,13 +168,32 @@ func (m *Manager) runSingle(ctx context.Context, snd *models.Send) error {
 }
 
 func (m *Manager) runBulk(ctx context.Context, snd *models.Send) error {
-	if snd.ListID == nil || snd.MaxSubscriptionID == nil {
-		return m.failSend(ctx, snd.ID, "bulk send missing list_id or max_subscription_id")
+	if snd.ListID == nil {
+		return m.failSend(ctx, snd.ID, "bulk send missing list_id")
 	}
 	if snd.SendingDomain == "" {
 		return m.failSend(ctx, snd.ID, "bulk send missing sending_domain")
 	}
 	listID := *snd.ListID
+	// A scheduled send reaches dispatch with no frozen audience: resolve it
+	// now (current max subscription id + count) so every contact subscribed
+	// up to go-time is included, then persist so a crash/resume keeps the
+	// same dispatch-time snapshot.
+	if snd.MaxSubscriptionID == nil {
+		resolvedMax, err := m.store.MaxSubscriptionID(ctx, listID)
+		if err != nil {
+			return m.failSend(ctx, snd.ID, fmt.Sprintf("resolve audience: %v", err))
+		}
+		total, err := m.store.CountSubscribed(ctx, listID, resolvedMax)
+		if err != nil {
+			return m.failSend(ctx, snd.ID, fmt.Sprintf("resolve audience: %v", err))
+		}
+		if err := m.store.SetSendAudience(ctx, snd.ID, resolvedMax, total); err != nil {
+			return m.failSend(ctx, snd.ID, fmt.Sprintf("set audience: %v", err))
+		}
+		snd.MaxSubscriptionID = &resolvedMax
+		snd.TotalRecipients = total
+	}
 	maxID := *snd.MaxSubscriptionID
 	throttle := time.Duration(snd.ThrottleMS) * time.Millisecond
 

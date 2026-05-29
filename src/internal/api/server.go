@@ -77,6 +77,7 @@ func (s *Server) routes() chi.Router {
 	r.Post("/send/single", s.handleSingleSend)
 	r.Post("/send/{id}/resume", s.handleResumeSend)
 	r.Post("/send/{id}/next", s.handleResumeSend)
+	r.Post("/send/{id}/cancel", s.handleCancelSend)
 	r.Get("/send/{id}", s.handleGetSend)
 	r.Get("/send/{id}/stats", s.handleSendStats)
 	r.Get("/send/{id}/recipients", s.handleListSendRecipients)

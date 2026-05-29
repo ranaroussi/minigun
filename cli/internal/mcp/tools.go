@@ -22,6 +22,7 @@ func RegisterTools(s *mcpsdk.Server, c *client.Client) {
 	addSendSingle(s, c)
 	addSendBulk(s, c)
 	addResumeSend(s, c)
+	addCancelSend(s, c)
 	addGetSendStatus(s, c)
 	addGetSendStats(s, c)
 	addListSendRecipients(s, c)
@@ -226,6 +227,7 @@ type sendSingleInput struct {
 	Text      string `json:"text,omitempty" jsonschema:"Plain-text body. Auto-generated from md/html if omitted."`
 	Template  string `json:"template,omitempty" jsonschema:"HTML wrapper. {{content}} is replaced with the rendered body."`
 	TestMode  bool   `json:"test_mode,omitempty" jsonschema:"Mailgun test mode: accepted and logged but not delivered"`
+	SendAt    string `json:"send_at,omitempty" jsonschema:"Optional RFC3339 future time to schedule the send (e.g. 2026-06-01T09:00:00Z). Omit to send now. Cancel with cancel_send."`
 }
 
 func addSendSingle(s *mcpsdk.Server, c *client.Client) {
@@ -258,6 +260,7 @@ type sendBulkInput struct {
 	UnsubMode   string `json:"unsub_mode,omitempty" jsonschema:"local | redirect | external"`
 	UnsubRedir  string `json:"unsub_redir,omitempty"`
 	UnsubURL    string `json:"unsub_url,omitempty"`
+	SendAt      string `json:"send_at,omitempty" jsonschema:"Optional RFC3339 future time to schedule the send (e.g. 2026-06-01T09:00:00Z). Omit to send now. Cancel with cancel_send."`
 }
 
 func addSendBulk(s *mcpsdk.Server, c *client.Client) {
@@ -299,6 +302,20 @@ func addResumeSend(s *mcpsdk.Server, c *client.Client) {
 
 type sendIDInput struct {
 	SendID string `json:"send_id"`
+}
+
+func addCancelSend(s *mcpsdk.Server, c *client.Client) {
+	mcpsdk.AddTool(s, &mcpsdk.Tool{
+		Name:        "cancel_send",
+		Description: "Cancels a send that has not started yet (status 'scheduled' or 'queued') by transitioning it to 'cancelled'. This is the unschedule path for sends created with send_at. Refuses (409) if the send is already running, completed, failed, or cancelled.",
+		Annotations: &mcpsdk.ToolAnnotations{
+			DestructiveHint: boolPtr(true),
+			IdempotentHint:  true,
+			Title:           "Cancel scheduled send",
+		},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in sendIDInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		return passthrough(c.Post("/send/"+in.SendID+"/cancel", nil))
+	})
 }
 
 func addGetSendStatus(s *mcpsdk.Server, c *client.Client) {

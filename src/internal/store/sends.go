@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ranaroussi/minigun/internal/ids"
 	"github.com/ranaroussi/minigun/internal/models"
@@ -37,6 +38,10 @@ type NewSendParams struct {
 	UnsubscribeRedirectURL *string
 	UnsubscribeExternalURL *string
 	NotifyEmail            *string
+	// SendAt, when non-nil and in the future, parks the send in the
+	// 'scheduled' status for the dispatcher to pick up at that time rather
+	// than dispatching it immediately. A nil or past value sends now.
+	SendAt *time.Time
 }
 
 func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, error) {
@@ -52,6 +57,17 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 		p.UnsubscribeMode = models.UnsubModeLocal
 	}
 
+	// Schedule only when send_at is in the future; a nil or past value
+	// sends immediately (status 'queued', send_at left NULL). send_at is
+	// stored at second precision so the dispatcher's lexical string
+	// comparison against `now` is exactly chronological.
+	status := models.SendStatusQueued
+	var sendAt any
+	if p.SendAt != nil && p.SendAt.After(time.Now()) {
+		status = models.SendStatusScheduled
+		sendAt = p.SendAt.UTC().Format(time.RFC3339)
+	}
+
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
@@ -65,14 +81,14 @@ func (s *Store) CreateSend(ctx context.Context, p NewSendParams) (*models.Send, 
 			status, batch_size, throttle_ms, test_mode,
 			last_subscription_id, max_subscription_id, total_recipients,
 			unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
-			notify_email, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			notify_email, send_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, p.Type, p.ListID, p.RecipientEmail, p.Subject, p.FromHeader, nullString(p.ReplyTo), nullString(p.TemplateName),
 		nullString(p.BodyMD), nullString(p.BodyHTML), nullString(p.BodyText), p.SendingDomain,
-		models.SendStatusQueued, p.BatchSize, p.ThrottleMS, p.TestMode,
+		status, p.BatchSize, p.ThrottleMS, p.TestMode,
 		p.LastSubscriptionID, p.MaxSubscriptionID, p.TotalRecipients,
 		p.UnsubscribeMode, nullString(p.UnsubscribeRedirectURL), nullString(p.UnsubscribeExternalURL),
-		nullString(p.NotifyEmail), now, now,
+		nullString(p.NotifyEmail), sendAt, now, now,
 	); err != nil {
 		return nil, fmt.Errorf("insert send: %w", err)
 	}
@@ -92,7 +108,7 @@ func (s *Store) GetSend(ctx context.Context, id string) (*models.Send, error) {
 		       status, batch_size, throttle_ms, test_mode,
 		       last_subscription_id, max_subscription_id, total_recipients,
 		       unsubscribe_mode, unsubscribe_redirect_url, unsubscribe_external_url,
-		       notify_email, last_error, created_at, updated_at, completed_at
+		       notify_email, send_at, last_error, created_at, updated_at, completed_at
 		FROM sends WHERE id = ?`, id,
 	)
 	return scanSend(row)
@@ -101,7 +117,7 @@ func (s *Store) GetSend(ctx context.Context, id string) (*models.Send, error) {
 func scanSend(row *sql.Row) (*models.Send, error) {
 	var s models.Send
 	var listID, recipEmail, replyTo, tmpl, bodyMD, bodyHTML, bodyText sql.NullString
-	var unsubRedir, unsubExt, notifyEmail, lastErr sql.NullString
+	var unsubRedir, unsubExt, notifyEmail, sendAt, lastErr sql.NullString
 	var maxSubID sql.NullInt64
 	var created, updated string
 	var completed sql.NullString
@@ -112,7 +128,7 @@ func scanSend(row *sql.Row) (*models.Send, error) {
 		&s.Status, &s.BatchSize, &s.ThrottleMS, &s.TestMode,
 		&s.LastSubscriptionID, &maxSubID, &s.TotalRecipients,
 		&s.UnsubscribeMode, &unsubRedir, &unsubExt,
-		&notifyEmail, &lastErr, &created, &updated, &completed,
+		&notifyEmail, &sendAt, &lastErr, &created, &updated, &completed,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -132,6 +148,9 @@ func scanSend(row *sql.Row) (*models.Send, error) {
 	s.NotifyEmail = stringPtr(notifyEmail)
 	s.LastError = stringPtr(lastErr)
 	var err error
+	if s.SendAt, err = parseTimePtr(sendAt); err != nil {
+		return nil, err
+	}
 	if s.CreatedAt, err = parseTime(created); err != nil {
 		return nil, err
 	}
@@ -173,6 +192,19 @@ func (s *Store) AdvanceSendCursor(ctx context.Context, id string, lastSubID int6
 	return err
 }
 
+// SetSendAudience freezes a bulk send's recipient set by recording the
+// upper subscription-id bound and the resolved recipient count. For
+// immediate sends this is captured at creation; for scheduled sends it's
+// deferred to dispatch so everyone subscribed up to go-time is included.
+func (s *Store) SetSendAudience(ctx context.Context, id string, maxSubID int64, total int) error {
+	now := nowISO()
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE sends SET max_subscription_id = ?, total_recipients = ?, updated_at = ? WHERE id = ?`,
+		maxSubID, total, now, id,
+	)
+	return err
+}
+
 func (s *Store) ListRunningSends(ctx context.Context) ([]*models.Send, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT id FROM sends WHERE status IN ('queued', 'running') ORDER BY created_at ASC`)
@@ -204,4 +236,60 @@ func (s *Store) HasInFlightBatch(ctx context.Context, sendID string) (bool, erro
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// ListDueScheduledSends returns the ids of scheduled sends whose send_at has
+// arrived (send_at <= now), oldest first. send_at is compared as a fixed
+// second-precision RFC3339 string, so lexical order is chronological order.
+func (s *Store) ListDueScheduledSends(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT id FROM sends
+		 WHERE status = 'scheduled' AND send_at IS NOT NULL AND send_at <= ?
+		 ORDER BY send_at ASC
+		 LIMIT ?`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// CancelScheduledSend transitions a send to 'cancelled', but only from the
+// pre-dispatch states ('scheduled' or 'queued'). The guarded WHERE makes
+// this race-safe against the dispatcher: if the send started in the gap
+// between a status read and this call, zero rows update and cancelled=false.
+func (s *Store) CancelScheduledSend(ctx context.Context, id string) (bool, error) {
+	now := nowISO()
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE sends
+		   SET status = 'cancelled', updated_at = ?, completed_at = ?
+		 WHERE id = ? AND status IN ('scheduled', 'queued')`,
+		now, now, id,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if err := s.MarkSendCompletedForStats(ctx, id); err != nil {
+		return false, err
+	}
+	return true, nil
 }

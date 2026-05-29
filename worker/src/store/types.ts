@@ -80,7 +80,14 @@ export type ListContactRow = {
 };
 
 export type SendType = 'bulk' | 'single';
-export type SendStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused';
+export type SendStatus =
+  | 'queued'
+  | 'scheduled'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'paused';
 export type BatchStatus = 'in_flight' | 'succeeded' | 'failed';
 export type UnsubscribeMode = 'local' | 'mailgun' | 'external' | 'none';
 
@@ -108,6 +115,7 @@ export type Send = {
   unsubscribe_redirect_url?: string | null;
   unsubscribe_external_url?: string | null;
   notify_email?: string | null;
+  send_at?: string | null;
   last_error?: string | null;
   created_at: string;
   updated_at: string;
@@ -122,6 +130,7 @@ export type SendSummary = {
   subject: string;
   status: SendStatus;
   total_recipients: number;
+  send_at?: string | null;
   created_at: string;
   updated_at: string;
   completed_at?: string | null;

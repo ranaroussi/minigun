@@ -62,6 +62,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Error("recover pending sends", "err", err)
 	}
 	go wm.RunStatsScheduler(ctx, 15*time.Minute)
+	// Scheduled-send dispatcher — picks up future-dated sends (status
+	// 'scheduled') once their send_at arrives. Tick rate bounds scheduling
+	// granularity; 30s is well within email tolerances.
+	go wm.RunScheduledSendDispatcher(ctx, 30*time.Second)
 	// Events archive scheduler — internally no-ops when
 	// cfg.EventsArchiveEnabled is false. We spawn the goroutine
 	// unconditionally so flipping EVENTS_ARCHIVE_ENABLED=true at runtime

@@ -11,7 +11,7 @@ import { mountSends } from './routes/sends';
 import { mountUnsubscribe } from './routes/unsubscribe';
 import { mountWebhooks } from './routes/webhooks';
 import { runAutoPruneOnce } from './send/auto_prune';
-import { sweepStuckSends } from './send/cron';
+import { dispatchDueSends, sweepStuckSends } from './send/cron';
 import { pullDueSendEvents } from './send/events_pull';
 import { refreshDueStats } from './send/stats';
 
@@ -49,6 +49,9 @@ export default {
   fetch: app.fetch,
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(sweepStuckSends(env));
+    // Dispatch any future-dated sends whose send_at has arrived. Cheap when
+    // there are none (one indexed query); granularity is the cron tick.
+    ctx.waitUntil(dispatchDueSends(env));
     ctx.waitUntil(refreshDueStats(env));
     // pullDueSendEvents internally short-circuits when EVENTS_ARCHIVE_ENABLED
     // is not "true", so this is a near-zero-cost noop until Phase 2 is

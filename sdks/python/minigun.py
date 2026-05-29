@@ -166,6 +166,7 @@ class Minigun:
         domain: Optional[str] = None,
         list: Optional[str] = None,
         test_mode: bool = False,
+        send_at: Optional[str] = None,
     ) -> dict:
         """Send a single transactional email.
 
@@ -204,6 +205,7 @@ class Minigun:
                 "text": text or "",
                 "template": template or "",
                 "test_mode": test_mode,
+                "send_at": send_at or "",
             },
         )
 
@@ -231,6 +233,7 @@ class Minigun:
         unsub_redir: Optional[str] = None,
         unsub_url: Optional[str] = None,
         test_mode: bool = False,
+        send_at: Optional[str] = None,
     ) -> dict:
         """Trigger a bulk send to a list. Returns 202 immediately with
         a send_id while the worker drives batches in the background.
@@ -272,6 +275,7 @@ class Minigun:
                 "unsub_redir": unsub_redir or "",
                 "unsub_url": unsub_url or "",
                 "test_mode": test_mode,
+                "send_at": send_at or "",
             },
         )
 
@@ -293,6 +297,13 @@ class Minigun:
         if force:
             path += "?force=1"
         return self._post(path, {})
+
+    def cancel_send(self, send_id: str) -> dict:
+        """Cancel a send that has not started yet (status 'scheduled'
+        or 'queued'), transitioning it to 'cancelled'. This is the
+        unschedule path for sends created with send_at. Raises (409)
+        if the send is already running or in a terminal state."""
+        return self._post(f"/send/{_q(send_id)}/cancel", {})
 
     def list_send_recipients(
         self,

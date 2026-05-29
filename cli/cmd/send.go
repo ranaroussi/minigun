@@ -29,6 +29,7 @@ var (
 	bulkUnsubRedir string
 	bulkUnsubURL   string
 	bulkTestMode   bool
+	bulkSendAt     string
 
 	singleTo           string
 	singleSubject      string
@@ -43,6 +44,7 @@ var (
 	singleTextFile     string
 	singleTemplateFile string
 	singleTestMode     bool
+	singleSendAt       string
 
 	resumeForce bool
 
@@ -83,6 +85,9 @@ var sendBulkCmd = &cobra.Command{
 		}
 		if bulkDomain != "" {
 			body["domain"] = bulkDomain
+		}
+		if bulkSendAt != "" {
+			body["send_at"] = bulkSendAt
 		}
 		resp, err := newClient().Post("/send/bulk", body)
 		if err != nil {
@@ -126,6 +131,9 @@ var sendSingleCmd = &cobra.Command{
 		if singleDomain != "" {
 			body["domain"] = singleDomain
 		}
+		if singleSendAt != "" {
+			body["send_at"] = singleSendAt
+		}
 		resp, err := newClient().Post("/send/single", body)
 		if err != nil {
 			return err
@@ -145,6 +153,26 @@ var sendResumeCmd = &cobra.Command{
 			path += "?force=1"
 		}
 		resp, err := newClient().Post(path, nil)
+		if err != nil {
+			return err
+		}
+		printJSON(resp.Body)
+		return resp.Error()
+	},
+}
+
+var sendCancelCmd = &cobra.Command{
+	Use:   "cancel <send_id>",
+	Short: "Cancel a scheduled (or not-yet-started) send before it dispatches",
+	Long: `Cancels a send that has not started yet — i.e. one still in the
+'scheduled' (future-dated) or 'queued' state — by transitioning it to
+'cancelled'. This is the unschedule path for sends created with --send-at.
+
+A send that is already running, completed, failed, or cancelled cannot be
+cancelled this way (returns 409).`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resp, err := newClient().Post(fmt.Sprintf("/send/%s/cancel", args[0]), nil)
 		if err != nil {
 			return err
 		}
@@ -430,6 +458,7 @@ func init() {
 	sendBulkCmd.Flags().StringVar(&bulkUnsubRedir, "unsub-redir", "", "Redirect URL (for unsub-mode=redirect)")
 	sendBulkCmd.Flags().StringVar(&bulkUnsubURL, "unsub-url", "", "External handler URL (for unsub-mode=external)")
 	sendBulkCmd.Flags().BoolVar(&bulkTestMode, "testmode", false, "Mailgun test mode: messages are accepted and logged but not delivered. Useful for dry runs.")
+	sendBulkCmd.Flags().StringVar(&bulkSendAt, "send-at", "", "Schedule the send for a future RFC3339 time (e.g. 2026-06-01T09:00:00Z). Omit to send now. Cancel with 'send cancel'.")
 	_ = sendBulkCmd.MarkFlagRequired("list")
 	_ = sendBulkCmd.MarkFlagRequired("subject")
 	_ = sendBulkCmd.MarkFlagRequired("from")
@@ -447,6 +476,7 @@ func init() {
 	sendSingleCmd.Flags().StringVar(&singleTextFile, "text", "", "Plain-text body file (optional)")
 	sendSingleCmd.Flags().StringVar(&singleTemplateFile, "template", "", "HTML wrapper template file ({{content}} is replaced with the rendered body)")
 	sendSingleCmd.Flags().BoolVar(&singleTestMode, "testmode", false, "Mailgun test mode: message is accepted and logged but not delivered. Useful for dry runs.")
+	sendSingleCmd.Flags().StringVar(&singleSendAt, "send-at", "", "Schedule the send for a future RFC3339 time (e.g. 2026-06-01T09:00:00Z). Omit to send now. Cancel with 'send cancel'.")
 	_ = sendSingleCmd.MarkFlagRequired("to")
 	_ = sendSingleCmd.MarkFlagRequired("subject")
 	_ = sendSingleCmd.MarkFlagRequired("from")
@@ -465,6 +495,6 @@ func init() {
 	sendClicksCmd.Flags().StringVar(&clicksCursor, "cursor", "", "Opaque pagination cursor from a previous page's next_cursor")
 	sendClicksCmd.Flags().BoolVar(&clicksAll, "all", false, "Follow next_cursor and emit all click rows as one JSON array")
 
-	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendStatusCmd, sendStatsCmd, sendRecipientsCmd, sendClicksCmd)
+	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendCancelCmd, sendStatusCmd, sendStatsCmd, sendRecipientsCmd, sendClicksCmd)
 	rootCmd.AddCommand(sendCmd)
 }

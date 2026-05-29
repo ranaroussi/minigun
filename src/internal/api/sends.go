@@ -2,8 +2,10 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -32,6 +34,7 @@ type bulkSendReq struct {
 	UnsubURL    string `json:"unsub_url"`
 	NotifyEmail string `json:"notify_email"`
 	TestMode    bool   `json:"test_mode"`
+	SendAt      string `json:"send_at"`
 }
 
 func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +49,11 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MD == "" && req.HTML == "" {
 		writeError(w, http.StatusBadRequest, "either md or html is required")
+		return
+	}
+	sendAt, err := parseSendAt(req.SendAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -105,6 +113,15 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 		mode = models.UnsubscribeMode(req.UnsubMode)
 	}
 
+	// A scheduled bulk send resolves its audience at dispatch (so everyone
+	// subscribed up to go-time is included), not at creation. Park it with
+	// no max_subscription_id; total here is just a live estimate.
+	scheduled := sendAt != nil && sendAt.After(time.Now())
+	var maxSubID *int64
+	if !scheduled {
+		maxSubID = &maxID
+	}
+
 	params := store.NewSendParams{
 		Type:                   models.SendTypeBulk,
 		ListID:                 &listID,
@@ -118,17 +135,28 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 		SendingDomain:          sendingDomain,
 		BatchSize:              req.BatchSize,
 		ThrottleMS:             req.ThrottleMS,
-		MaxSubscriptionID:      &maxID,
+		MaxSubscriptionID:      maxSubID,
 		TotalRecipients:        total,
 		UnsubscribeMode:        mode,
 		UnsubscribeRedirectURL: emptyToNil(req.UnsubRedir),
 		UnsubscribeExternalURL: emptyToNil(req.UnsubURL),
 		NotifyEmail:            emptyToNil(req.NotifyEmail),
 		TestMode:               req.TestMode,
+		SendAt:                 sendAt,
 	}
 	snd, err := s.store.CreateSend(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// A future-dated send is parked for the dispatcher; don't kick it now.
+	if snd.Status == models.SendStatusScheduled {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"send_id":          snd.ID,
+			"status":           snd.Status,
+			"send_at":          snd.SendAt,
+			"total_recipients": total,
+		})
 		return
 	}
 	if err := s.worker.Start(r.Context(), snd.ID); err != nil {
@@ -156,6 +184,7 @@ type singleSendReq struct {
 	Text      string `json:"text"`
 	Template  string `json:"template"`
 	TestMode  bool   `json:"test_mode"`
+	SendAt    string `json:"send_at"`
 }
 
 func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +203,11 @@ func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MD == "" && req.HTML == "" {
 		writeError(w, http.StatusBadRequest, "either md or html is required")
+		return
+	}
+	sendAt, err := parseSendAt(req.SendAt)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	company, err := s.store.ResolveCompany(r.Context(), strings.TrimSpace(req.Company))
@@ -266,10 +300,19 @@ func (s *Server) handleSingleSend(w http.ResponseWriter, r *http.Request) {
 		ThrottleMS:         0,
 		TestMode:           req.TestMode,
 		LastSubscriptionID: subscriptionID,
+		SendAt:             sendAt,
 	}
 	snd, err := s.store.CreateSend(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if snd.Status == models.SendStatusScheduled {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"send_id": snd.ID,
+			"status":  snd.Status,
+			"send_at": snd.SendAt,
+		})
 		return
 	}
 	if err := s.worker.Start(r.Context(), snd.ID); err != nil {
@@ -321,6 +364,42 @@ func (s *Server) handleResumeSend(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleCancelSend(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	snd, err := s.store.GetSend(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "send not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	switch snd.Status {
+	case models.SendStatusRunning:
+		writeError(w, http.StatusConflict, "send is already running; cannot cancel an in-flight send")
+		return
+	case models.SendStatusCompleted, models.SendStatusFailed, models.SendStatusCancelled:
+		writeError(w, http.StatusConflict, "send is already "+string(snd.Status))
+		return
+	}
+	cancelled, err := s.store.CancelScheduledSend(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !cancelled {
+		// Lost the race with the dispatcher between the status read above
+		// and the guarded update — it just started running.
+		writeError(w, http.StatusConflict, "send started before it could be cancelled")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"send_id": id,
+		"status":  models.SendStatusCancelled,
+	})
+}
+
 func (s *Server) handleGetSend(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	snd, err := s.store.GetSend(r.Context(), id)
@@ -355,6 +434,7 @@ func (s *Server) handleGetSend(w http.ResponseWriter, r *http.Request) {
 			"remaining":            remaining,
 			"last_subscription_id": snd.LastSubscriptionID,
 		},
+		"send_at":      snd.SendAt,
 		"created_at":   snd.CreatedAt,
 		"updated_at":   snd.UpdatedAt,
 		"completed_at": snd.CompletedAt,
@@ -436,4 +516,20 @@ func emptyToNil(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// parseSendAt parses an optional RFC3339 schedule time. Empty means "send
+// now" (nil). A past timestamp is accepted and also sends now — the store
+// only parks the send when the time is genuinely in the future, so callers
+// don't get tripped up by minor clock skew.
+func parseSendAt(s string) (*time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return nil, fmt.Errorf("send_at must be an RFC3339 timestamp (e.g. 2026-06-01T09:00:00Z): %v", err)
+	}
+	return &t, nil
 }

@@ -15,7 +15,7 @@ import { sendProgress } from '../store/batches';
 import { resolveCompany } from '../store/companies';
 import { upsertContact } from '../store/contacts';
 import { resolveList } from '../store/lists';
-import { createSend, getSend, listSends } from '../store/sends';
+import { cancelScheduledSend, createSend, getSend, listSends } from '../store/sends';
 import { getSendStats } from '../store/stats';
 import {
   countSubscribed,
@@ -28,6 +28,16 @@ import { countUnsubscribesForSend } from '../store/unsubs';
 function emptyToNull(s: string | undefined | null): string | null {
   if (!s || !s.trim()) return null;
   return s;
+}
+
+// Returns an error message when send_at is present but unparseable, else null
+// (null = valid, which includes the "not provided" case). Empty means send now.
+function sendAtError(s: string | undefined | null): string | null {
+  if (!s || !s.trim()) return null;
+  if (Number.isNaN(Date.parse(s.trim()))) {
+    return 'send_at must be an ISO-8601 timestamp (e.g. 2026-06-01T09:00:00Z)';
+  }
+  return null;
 }
 
 async function handleSendStep(c: Context<{ Bindings: Env }>) {
@@ -74,6 +84,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       unsub_url?: string;
       notify_email?: string;
       test_mode?: boolean;
+      send_at?: string;
     }>().catch(() => null);
     if (!body) return c.json({ error: 'invalid JSON' }, 400);
     if (!body.list?.trim() || !body.subject?.trim() || !body.from?.trim()) {
@@ -82,6 +93,8 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
     if (!body.md && !body.html) {
       return c.json({ error: 'either md or html is required' }, 400);
     }
+    const bulkSendAtErr = sendAtError(body.send_at);
+    if (bulkSendAtErr) return c.json({ error: bulkSendAtErr }, 400);
     let list;
     try {
       list = await resolveList(c.env.DB, body.list);
@@ -119,6 +132,11 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
     const total = await countSubscribed(c.env.DB, list.id, maxID);
     const mode = (body.unsub_mode || 'local') as UnsubscribeMode;
 
+    // A scheduled bulk send resolves its audience at dispatch (so everyone
+    // subscribed up to go-time is included), not at creation. Park it with a
+    // null max_subscription_id; total here is just a live estimate.
+    const scheduled = !!body.send_at && new Date(body.send_at).getTime() > Date.now();
+
     const snd = await createSend(c.env.DB, {
       type: 'bulk',
       list_id: list.id,
@@ -132,14 +150,22 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       sending_domain: sendingDomain,
       batch_size: body.batch_size,
       throttle_ms: body.throttle_ms,
-      max_subscription_id: maxID,
+      max_subscription_id: scheduled ? null : maxID,
       total_recipients: total,
       unsubscribe_mode: mode,
       unsubscribe_redirect_url: emptyToNull(body.unsub_redir),
       unsubscribe_external_url: emptyToNull(body.unsub_url),
       notify_email: emptyToNull(body.notify_email),
       test_mode: body.test_mode === true,
+      send_at: body.send_at,
     });
+    // A future-dated send is parked for the cron dispatcher; don't kick it.
+    if (snd.status === 'scheduled') {
+      return c.json(
+        { send_id: snd.id, status: snd.status, send_at: snd.send_at, total_recipients: total },
+        202,
+      );
+    }
     // Run the first batch inline rather than self-fetching /send/:id/next.
     // The fire-and-forget kick was unreliable on this worker (waitUntil could
     // drop the in-flight subrequest before it landed), leaving sends stuck in
@@ -177,6 +203,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       text?: string;
       template?: string;
       test_mode?: boolean;
+      send_at?: string;
     }>().catch(() => null);
     if (!body) return c.json({ error: 'invalid JSON' }, 400);
     if (!body.to?.trim() || !body.subject?.trim() || !body.from?.trim()) {
@@ -188,6 +215,8 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
     if (!body.md && !body.html) {
       return c.json({ error: 'either md or html is required' }, 400);
     }
+    const singleSendAtErr = sendAtError(body.send_at);
+    if (singleSendAtErr) return c.json({ error: singleSendAtErr }, 400);
 
     let company;
     try {
@@ -256,13 +285,40 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       throttle_ms: 0,
       test_mode: body.test_mode === true,
       last_subscription_id: subscriptionID,
+      send_at: body.send_at,
     });
+    if (snd.status === 'scheduled') {
+      return c.json({ send_id: snd.id, status: snd.status, send_at: snd.send_at }, 202);
+    }
     c.executionCtx.waitUntil(runSingle(c.env, snd.id));
     return c.json({ send_id: snd.id, status: snd.status }, 202);
   });
 
   app.post('/send/:id/next', handleSendStep);
   app.post('/send/:id/resume', handleSendStep);
+
+  app.post('/send/:id/cancel', async (c) => {
+    const id = c.req.param('id');
+    if (!id) return c.json({ error: 'send id required' }, 400);
+    let snd;
+    try {
+      snd = await getSend(c.env.DB, id);
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: 'send not found' }, 404);
+      throw err;
+    }
+    if (snd.status === 'running') {
+      return c.json({ error: 'send is already running; cannot cancel an in-flight send' }, 409);
+    }
+    if (snd.status === 'completed' || snd.status === 'failed' || snd.status === 'cancelled') {
+      return c.json({ error: `send is already ${snd.status}` }, 409);
+    }
+    const cancelled = await cancelScheduledSend(c.env.DB, id);
+    if (!cancelled) {
+      return c.json({ error: 'send started before it could be cancelled' }, 409);
+    }
+    return c.json({ send_id: id, status: 'cancelled' });
+  });
 
   app.get('/send/:id', async (c) => {
     const id = c.req.param('id');
@@ -289,6 +345,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         remaining,
         last_subscription_id: snd.last_subscription_id,
       },
+      send_at: snd.send_at,
       created_at: snd.created_at,
       updated_at: snd.updated_at,
       completed_at: snd.completed_at,

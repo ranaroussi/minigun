@@ -126,6 +126,16 @@ minigun send bulk --list newsletter --subject "Smoke test" \
 
 The flag is persisted on the send row, so if the chain dies mid-send and the cron sweep resumes it, every subsequent batch stays in test mode.
 
+**Scheduling.** Add `--send-at` with an RFC3339 timestamp to dispatch the send at a future time instead of now:
+
+```bash
+minigun send bulk --list newsletter --subject "Tuesday digest" \
+  --from "Ran <ran@example.com>" --md ./email.md \
+  --send-at 2026-06-01T09:00:00Z
+```
+
+The send is parked in the new `scheduled` status; a background dispatcher picks it up once `send_at` arrives (granularity is the dispatcher tick — sub-minute precision isn't guaranteed, which is fine for email). The recipient set is resolved when the send fires, so contacts who subscribe between scheduling and dispatch are included; additions *during* the send itself are still excluded (the same consistent-snapshot guarantee as an immediate send). A `send_at` in the past sends immediately. Unschedule a parked send with `minigun send cancel`.
+
 ### `minigun send single`
 
 ```bash
@@ -137,7 +147,17 @@ minigun send single \
   --md ./hello.md
 ```
 
-Single transactional sends don't belong to a list, so `--company` is required: MiniGun resolves the sending domain from `company.sending_domain`. Pass `--domain` to override. `--testmode` works here too.
+Single transactional sends don't belong to a list, so `--company` is required: MiniGun resolves the sending domain from `company.sending_domain`. Pass `--domain` to override. `--testmode` works here too, as does `--send-at` (same parking/dispatch/cancel mechanics as bulk; a single send targets one explicit recipient, so there's no audience to resolve — it sends to that address when it fires).
+
+### `minigun send cancel <id>`
+
+Unschedule a send that hasn't started yet — i.e. one still in `scheduled` (future-dated) or `queued` — by transitioning it to `cancelled`:
+
+```bash
+minigun send cancel s_8Kx29aPqz
+```
+
+This is the counterpart to `--send-at`. The guard is race-safe against the dispatcher: a send that has already started (`running`) or finished (`completed`/`failed`/`cancelled`) returns `409` and is left untouched.
 
 ### `minigun send status <id>`
 
@@ -290,7 +310,7 @@ The `env` block is optional if your MCP client inherits the shell environment. m
 
 ### What's exposed
 
-**Tools** — every MiniGun operation as an MCP tool. Destructive ones (`send_bulk`, `send_single`, `unsubscribe_contact`, `resume_send`) are tagged so MCP clients can render the appropriate confirmation UI.
+**Tools** — every MiniGun operation as an MCP tool. Destructive ones (`send_bulk`, `send_single`, `unsubscribe_contact`, `resume_send`, `cancel_send`) are tagged so MCP clients can render the appropriate confirmation UI.
 
 | Tool | Maps to | Notes |
 |---|---|---|
@@ -299,9 +319,10 @@ The `env` block is optional if your MCP client inherits the shell environment. m
 | `add_contact` | `POST /lists/{list}/contacts` | |
 | `unsubscribe_contact` | `POST /lists/{list}/unsubscribe` | Destructive — confirmation suggested |
 | `delete_contact` | `DELETE /contacts/{idOrEmail}` | Destructive — hard purge |
-| `send_single` | `POST /send/single` | Destructive — sends mail |
-| `send_bulk` | `POST /send/bulk` | Destructive — sends mail |
+| `send_single` | `POST /send/single` | Destructive — sends mail; accepts `send_at` to schedule |
+| `send_bulk` | `POST /send/bulk` | Destructive — sends mail; accepts `send_at` to schedule |
 | `resume_send` | `POST /send/{id}/resume` | Destructive — sends mail |
+| `cancel_send` | `POST /send/{id}/cancel` | Destructive — unschedule a `scheduled`/`queued` send |
 | `get_send_status` | `GET /send/{id}` | ReadOnly |
 | `get_send_stats` | `GET /send/{id}/stats` | ReadOnly |
 | `list_send_recipients` | `GET /send/{id}/recipients` | ReadOnly — per-recipient message engagement; requires `EVENTS_ARCHIVE_ENABLED=true` |

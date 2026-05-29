@@ -86,6 +86,7 @@ Mailgun is excellent at sending email. It is not opinionated about how you store
 - A two-step CAPTCHA-protected unsubscribe page so email security scanners (Microsoft Defender, Gmail link inspection, Apple Mail Privacy Protection, etc.) don't silently unsubscribe your recipients by pre-fetching the link.
 - RFC 2369 + RFC 8058 one-click unsubscribe headers on every bulk send (required by Gmail and Yahoo's bulk-sender rules).
 - Crash-safe bulk sends. Each batch is checkpointed by a monotonic subscription id; if the process dies mid-send you resume from where you left off. Recipients added during a send don't get pulled in mid-flight.
+- Scheduled sends. Pass `--send-at <RFC3339>` (bulk or single) to dispatch at a future time; the send parks in a `scheduled` status until a background dispatcher picks it up. No Mailgun-side deferral, so there's no 3-day cap and `minigun send cancel <id>` unschedules it with a single guarded status flip. A scheduled *bulk* send resolves its recipient set when it fires, so contacts who subscribe before then are included (additions during the send itself are still excluded).
 - Companies / brands group related lists so a recipient on the *Acme Newsletter* and *Acme Product Updates* lists sees a single combined preferences page.
 - Permanent per-send stats. Mailgun retains event logs for only 5 days; MiniGun pulls the Metrics API on a front-loaded schedule (+0, +1h, +6h, +24h, +48h, +5d after completion) and persists the aggregates locally.
 - Clean Gmail rendering on cross-domain `From` headers. MiniGun always sets `Sender: <From>` so Mailgun doesn't rewrite it to a VERP bounce address, which is what makes Gmail show `From: brand@example.com via mailgun-route.example.com` and hide the native one-click unsubscribe.
@@ -116,6 +117,8 @@ minigun list    create     --name "Weekly" --slug weekly
 minigun contact add        weekly ran@example.com --params '{"first_name":"Ran"}'
 minigun contact delete     bounced@example.com    # hard-bounce purge (or by c_xxxx id)
 minigun send    bulk       --list weekly --subject "Hi" --from "Ran <r@x.com>" --md ./email.md
+minigun send    bulk       --list weekly --subject "Hi" --from "Ran <r@x.com>" --md ./email.md --send-at 2026-06-01T09:00:00Z
+minigun send    cancel     s_xxxx          # unschedule a scheduled/queued send
 minigun send    status     s_xxxx --watch
 minigun send    stats      s_xxxx
 minigun send    resume     s_xxxx          # crash-safe; --force after an in-flight batch
@@ -150,7 +153,7 @@ Then ask your model in plain English:
 
 > *"How did last Tuesday's send to the 'weekly' list perform? Draft a follow-up to anyone who opened it but didn't click."*
 
-Destructive tools (`send_bulk`, `send_single`, `unsubscribe_contact`, `resume_send`) are tagged so the client renders an explicit confirmation prompt. Two built-in **prompts** (`compose_newsletter`, `audit_send`) encode the two most common operator workflows.
+Destructive tools (`send_bulk`, `send_single`, `unsubscribe_contact`, `resume_send`, `cancel_send`) are tagged so the client renders an explicit confirmation prompt. Two built-in **prompts** (`compose_newsletter`, `audit_send`) encode the two most common operator workflows.
 
 → [docs/cli.md](./docs/cli.md#mcp-server-minigun-mcp)
 
@@ -335,7 +338,7 @@ One HTTP service, two implementations (Go binary, Cloudflare Worker), one shared
 
 ## SDKs
 
-Single-file, zero-dependency drop-in clients for the most common server languages. Every SDK exposes the same surface (contacts, sends, status, stats, resume, delete) with the same error model — pick whichever fits your stack:
+Single-file, zero-dependency drop-in clients for the most common server languages. Every SDK exposes the same surface (contacts, sends, scheduling/cancel, status, stats, resume, delete) with the same error model — pick whichever fits your stack:
 
 | Language | File | Drop in / install | Reference |
 |---|---|---|---|
@@ -382,10 +385,11 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | POST   | `/lists/{list}/unsubscribe`                | Admin unsubscribe by email (keeps row, marks `subscribed=0`). |
 | DELETE | `/contacts/{idOrEmail}`                    | Hard-delete a contact + all subscriptions + audit rows (hard-bounce cleanup). |
 | GET    | `/sends?cursor=&limit=`                    | Paginated send history (created_at desc). |
-| POST   | `/send/bulk`                               | Start a bulk send. |
-| POST   | `/send/single`                             | Send a single transactional email. |
+| POST   | `/send/bulk`                               | Start a bulk send. Optional `send_at` (RFC3339) schedules it for later. |
+| POST   | `/send/single`                             | Send a single transactional email. Optional `send_at` (RFC3339) schedules it for later. |
 | POST   | `/send/{id}/next`                          | Execute the next batch step (chain self-call; alias of `/resume`). |
 | POST   | `/send/{id}/resume`                        | Resume a paused / failed send (alias of `/next`). |
+| POST   | `/send/{id}/cancel`                        | Unschedule a `scheduled`/`queued` send (→ `cancelled`). `409` once running or terminal. |
 | GET    | `/send/{id}`                               | Send status + progress. |
 | GET    | `/send/{id}/stats`                         | Aggregate stats (DB-backed; falls back to live Mailgun for fresh sends). |
 | GET    | `/send/{id}/recipients?limit=&cursor=` | Per-recipient message engagement rollup for a send (one row per contact; keyset-paginated by `contact_id`). Requires `EVENTS_ARCHIVE_ENABLED=true`. |

@@ -158,7 +158,8 @@ class Minigun
         ?string $replyTo      = null,
         ?string $domain       = null,
         ?string $list         = null,
-        bool    $testMode     = false
+        bool    $testMode     = false,
+        ?string $sendAt       = null
     ): array {
         $md       = $this->resolveBody('md',       $md,       $mdFile);
         $html     = $this->resolveBody('html',     $html,     $htmlFile);
@@ -183,6 +184,7 @@ class Minigun
             'text'      => $text      ?? '',
             'template'  => $template  ?? '',
             'test_mode' => $testMode,
+            'send_at'   => $sendAt    ?? '',
         ]);
     }
 
@@ -217,7 +219,8 @@ class Minigun
         string  $unsubMode    = self::UNSUB_LOCAL,
         ?string $unsubRedir   = null,
         ?string $unsubUrl     = null,
-        bool    $testMode     = false
+        bool    $testMode     = false,
+        ?string $sendAt       = null
     ): array {
         $md       = $this->resolveBody('md',       $md,       $mdFile);
         $html     = $this->resolveBody('html',     $html,     $htmlFile);
@@ -255,6 +258,7 @@ class Minigun
             'unsub_redir'  => $unsubRedir ?? '',
             'unsub_url'    => $unsubUrl   ?? '',
             'test_mode'    => $testMode,
+            'send_at'      => $sendAt     ?? '',
         ]);
     }
 
@@ -310,6 +314,17 @@ class Minigun
     {
         $path = '/send/' . rawurlencode($sendId) . '/resume' . ($force ? '?force=1' : '');
         return $this->post($path, []);
+    }
+
+    /**
+     * Cancel a send that has not started yet (status 'scheduled' or
+     * 'queued'), transitioning it to 'cancelled'. This is the unschedule
+     * path for sends created with $sendAt. Throws (409) if the send is
+     * already running or in a terminal state.
+     */
+    public function cancelSend(string $sendId): array
+    {
+        return $this->post('/send/' . rawurlencode($sendId) . '/cancel', []);
     }
 
     /**
