@@ -388,7 +388,7 @@ cd worker && npm install        && npx tsc --noEmit && npx wrangler dev
 │   ├── python/minigun.py
 │   ├── typescript/minigun.ts
 │   └── go/{go.mod,minigun.go}
-└── skill/                  # Factory Droid (and any MCP-aware agent) operator skill
+└── skill/                  # A Agent (and any MCP-aware agent) operator skill
     └── minigun/SKILL.md
 ```
 
