@@ -9,10 +9,14 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	goldmarkhtml "github.com/yuin/goldmark/renderer/html"
 )
 
 var md = goldmark.New(
 	goldmark.WithExtensions(extension.GFM),
+	// WithHardWraps honors single newlines as <br>, matching how email
+	// authors write one line per thought (GitHub-comment style).
+	goldmark.WithRendererOptions(goldmarkhtml.WithHardWraps()),
 )
 
 func MarkdownToHTML(src string) (string, error) {

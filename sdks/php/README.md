@@ -89,7 +89,8 @@ $mg->listContacts(string $list, ?string $cursor = null, int $limit = 50): array;
 
 ```php
 $mg->sendSingle(
-    string $to, string $from, string $subject, string $company,
+    string $to, string $company,
+    /* optional — may come from md frontmatter: */ string $from = '', string $subject = '',
     /* one of: */ ?string $md = null, ?string $mdFile = null,
     ?string $html = null, ?string $htmlFile = null,
     ?string $text = null, ?string $textFile = null,
@@ -100,7 +101,8 @@ $mg->sendSingle(
 ): array;
 
 $mg->sendBulk(
-    string $list, string $subject, string $from,
+    string $list,
+    /* optional — may come from md frontmatter: */ string $subject = '', string $from = '',
     /* one of: */ ?string $md = null, ?string $mdFile = null,
     ?string $html = null, ?string $htmlFile = null,
     /* ... */
@@ -129,6 +131,8 @@ $mg->sendBulk(
 ```
 
 For each body field there's a "value-or-file path" pair (e.g. `$md` / `$mdFile`). Pass at most one; passing both throws `InvalidArgumentException`.
+
+`$subject` and `$from` are optional in the signature because they can be supplied via the Markdown frontmatter (a leading `---`/`-----` fenced block with `subject:` / `from:` / `preheader:` / `reply_to:`). An explicit argument wins; the block is stripped from the body. Use named arguments to skip them. If neither the argument nor frontmatter supplies `$subject` and `$from`, an `InvalidArgumentException` is thrown.
 
 Bulk-send unsubscribe modes:
 

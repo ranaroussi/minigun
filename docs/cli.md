@@ -191,6 +191,41 @@ minigun send single --to you@example.com --company acme --subject "Welcome" \
 
 When `--template` is omitted, MiniGun uses a clean built-in default wrapper.
 
+#### Markdown frontmatter
+
+When the Markdown body starts with a YAML-style `---` fenced block, the CLI (and the MCP `send_bulk` / `send_single` tools) read these keys from it so the matching flags become optional:
+
+| Frontmatter key | Fills flag |
+|---|---|
+| `subject` | `--subject` |
+| `preheader` | `--preheader` |
+| `from` | `--from` |
+| `reply_to` (or `reply-to`) | `--reply-to` |
+
+```markdown
+---
+subject: "Tuesday digest — what's new"
+preheader: A quick look at this week's releases
+from: Ran <ran@example.com>
+reply_to: support@example.com
+---
+
+Hi {{first_name | "there"}}, ...
+```
+
+```bash
+# subject / preheader / from / reply-to all come from the file:
+minigun send bulk --list newsletter --md ./week-12.md
+```
+
+Rules:
+
+- An **explicit flag always wins**; frontmatter only fills a flag you didn't pass.
+- The block is **stripped from the body** before sending, so it never renders into the email.
+- It's recognized only when the **first non-empty line is a fence** (three or more dashes, e.g. `---` or `-----`), closed by a later fence line — a horizontal rule mid-document is left alone.
+- **Unknown keys are ignored** (so `author:`, `date:`, etc. are harmless), and quoted values (`"…"` / `'…'`) are unquoted.
+- This is a CLI/MCP authoring convenience only — the HTTP API and SDKs still take `subject` / `preheader` / `from` / `reply_to` as explicit fields.
+
 ### `minigun send cancel <id>`
 
 Unschedule a send that hasn't started yet — i.e. one still in `scheduled` (future-dated) or `queued` — by transitioning it to `cancelled`:

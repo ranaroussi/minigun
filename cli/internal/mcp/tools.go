@@ -3,11 +3,21 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ranaroussi/minigun/cli/internal/client"
+	"github.com/ranaroussi/minigun/cli/internal/frontmatter"
 )
+
+// fmFallback returns explicit if non-empty, else the frontmatter fallback.
+func fmFallback(explicit, fallback string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	return fallback
+}
 
 func RegisterTools(s *mcpsdk.Server, c *client.Client) {
 	addHealth(s, c)
@@ -216,10 +226,10 @@ func addDeleteContact(s *mcpsdk.Server, c *client.Client) {
 
 type sendSingleInput struct {
 	To        string `json:"to" jsonschema:"Recipient email"`
-	Subject   string `json:"subject" jsonschema:"Email subject"`
-	Preheader string `json:"preheader,omitempty" jsonschema:"Short hidden snippet shown in the inbox preview line next to the subject"`
-	From      string `json:"from" jsonschema:"RFC 5322 From header"`
-	ReplyTo   string `json:"reply_to,omitempty"`
+	Subject   string `json:"subject,omitempty" jsonschema:"Email subject. Optional if the md frontmatter sets 'subject'; an explicit value here overrides frontmatter."`
+	Preheader string `json:"preheader,omitempty" jsonschema:"Short hidden snippet shown in the inbox preview line. Falls back to md frontmatter 'preheader'."`
+	From      string `json:"from,omitempty" jsonschema:"RFC 5322 From header. Optional if the md frontmatter sets 'from'; an explicit value here overrides frontmatter."`
+	ReplyTo   string `json:"reply_to,omitempty" jsonschema:"Reply-To address. Falls back to md frontmatter 'reply_to'."`
 	Company   string `json:"company" jsonschema:"Company id or slug. Resolves the sending domain."`
 	Domain    string `json:"domain,omitempty" jsonschema:"Override sending domain for this send"`
 	MD        string `json:"md,omitempty" jsonschema:"Markdown body. One of md or html is required."`
@@ -240,16 +250,22 @@ func addSendSingle(s *mcpsdk.Server, c *client.Client) {
 			Title:           "Send single email",
 		},
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in sendSingleInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		body, fm := frontmatter.Parse(in.MD)
+		in.MD = body
+		in.Subject = fmFallback(in.Subject, fm.Subject)
+		in.Preheader = fmFallback(in.Preheader, fm.Preheader)
+		in.From = fmFallback(in.From, fm.From)
+		in.ReplyTo = fmFallback(in.ReplyTo, fm.ReplyTo)
 		return passthrough(c.Post("/send/single", in))
 	})
 }
 
 type sendBulkInput struct {
 	List        string `json:"list" jsonschema:"List id or slug"`
-	Subject     string `json:"subject"`
-	Preheader   string `json:"preheader,omitempty"`
-	From        string `json:"from"`
-	ReplyTo     string `json:"reply_to,omitempty"`
+	Subject     string `json:"subject,omitempty" jsonschema:"Email subject. Optional if the md frontmatter sets 'subject'; an explicit value here overrides frontmatter."`
+	Preheader   string `json:"preheader,omitempty" jsonschema:"Falls back to md frontmatter 'preheader'."`
+	From        string `json:"from,omitempty" jsonschema:"RFC 5322 From header. Optional if the md frontmatter sets 'from'; an explicit value here overrides frontmatter."`
+	ReplyTo     string `json:"reply_to,omitempty" jsonschema:"Falls back to md frontmatter 'reply_to'."`
 	MD          string `json:"md,omitempty"`
 	HTML        string `json:"html,omitempty"`
 	Text        string `json:"text,omitempty"`
@@ -273,6 +289,12 @@ func addSendBulk(s *mcpsdk.Server, c *client.Client) {
 			Title:           "Send bulk email",
 		},
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, in sendBulkInput) (*mcpsdk.CallToolResult, struct{}, error) {
+		body, fm := frontmatter.Parse(in.MD)
+		in.MD = body
+		in.Subject = fmFallback(in.Subject, fm.Subject)
+		in.Preheader = fmFallback(in.Preheader, fm.Preheader)
+		in.From = fmFallback(in.From, fm.From)
+		in.ReplyTo = fmFallback(in.ReplyTo, fm.ReplyTo)
 		return passthrough(c.Post("/send/bulk", in))
 	})
 }

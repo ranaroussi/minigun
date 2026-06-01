@@ -123,6 +123,8 @@ await mg.sendBulk({
 
 The full `SendSingleArgs` / `SendBulkArgs` shapes are exported from the file. For each body field there's a value variant (`md`, `html`, `text`, `template`); pass at most one of `md` / `html` (the others are optional supplements). Unlike the PHP / Python / Go SDKs there are no `*File` companions — Node's `fs.promises.readFile()` is one line, and browsers / Workers don't have a filesystem at all, so this stayed JS-only on purpose.
 
+`subject` and `from` are optional in the interface because they can be supplied via the Markdown frontmatter (a leading `---`/`-----` fenced block with `subject:` / `from:` / `preheader:` / `reply_to:`). An explicit value wins; the block is stripped from `md` before sending. If neither the field nor frontmatter supplies `subject` and `from`, the method throws.
+
 Unsubscribe-mode constants are exported from the module:
 
 ```typescript

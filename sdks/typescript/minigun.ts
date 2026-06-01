@@ -28,6 +28,77 @@ export const UNSUB_REDIRECT = 'redirect' as const;
 export const UNSUB_EXTERNAL = 'external' as const;
 export type UnsubMode = typeof UNSUB_LOCAL | typeof UNSUB_REDIRECT | typeof UNSUB_EXTERNAL;
 
+interface Frontmatter {
+  /** The Markdown body with any frontmatter block stripped. */
+  body: string;
+  subject: string;
+  preheader: string;
+  from: string;
+  replyTo: string;
+}
+
+/** isFence reports whether a line is a frontmatter delimiter: three or
+ * more dashes and nothing else (ignoring surrounding whitespace). */
+function isFence(line: string): boolean {
+  const s = line.trim();
+  return s.length >= 3 && /^-+$/.test(s);
+}
+
+function unquote(s: string): string {
+  if (s.length >= 2) {
+    const a = s[0], b = s[s.length - 1];
+    if ((a === '"' && b === '"') || (a === "'" && b === "'")) return s.slice(1, -1);
+  }
+  return s;
+}
+
+/** Extract a leading "---" fenced frontmatter block from a Markdown body.
+ * Recognized only when the first non-empty line is a fence (three or more
+ * dashes) closed by a later fence line; otherwise the body is returned
+ * unchanged. Only subject/preheader/from/reply_to are read; other keys are
+ * ignored. The block is always stripped so it never renders into the email. */
+function parseFrontmatter(md?: string): Frontmatter {
+  const fm: Frontmatter = { body: md ?? '', subject: '', preheader: '', from: '', replyTo: '' };
+  if (!md) return fm;
+
+  const src = md.replace(/^\uFEFF/, '');
+  const lines = src.split('\n');
+
+  let open = 0;
+  while (open < lines.length && lines[open].trim() === '') open++;
+  if (open >= lines.length || !isFence(lines[open])) return fm;
+
+  let closing = -1;
+  for (let j = open + 1; j < lines.length; j++) {
+    if (isFence(lines[j])) { closing = j; break; }
+  }
+  if (closing < 0) return fm;
+
+  for (const raw of lines.slice(open + 1, closing)) {
+    const ln = raw.replace(/\r$/, '');
+    const c = ln.indexOf(':');
+    if (c < 0) continue;
+    const key = ln.slice(0, c).trim().toLowerCase();
+    const val = unquote(ln.slice(c + 1).trim());
+    switch (key) {
+      case 'subject': fm.subject = val; break;
+      case 'preheader': fm.preheader = val; break;
+      case 'from': fm.from = val; break;
+      case 'reply_to':
+      case 'reply-to': fm.replyTo = val; break;
+    }
+  }
+
+  let bodyLines = lines.slice(closing + 1);
+  while (bodyLines.length && bodyLines[0].trim() === '') bodyLines = bodyLines.slice(1);
+  fm.body = bodyLines.join('\n');
+  return fm;
+}
+
+function firstNonEmpty(explicit: string | undefined, fallback: string): string {
+  return explicit && explicit.trim() !== '' ? explicit : fallback;
+}
+
 export class MinigunError extends Error {
   constructor(message: string) {
     super(message);
@@ -67,8 +138,10 @@ export interface MinigunOptions {
 
 export interface SendSingleArgs {
   to: string;
-  from: string;
-  subject: string;
+  /** Optional if the `md` frontmatter sets `from`; an explicit value wins. */
+  from?: string;
+  /** Optional if the `md` frontmatter sets `subject`; an explicit value wins. */
+  subject?: string;
   company: string;
   md?: string;
   html?: string;
@@ -86,8 +159,10 @@ export interface SendSingleArgs {
 
 export interface SendBulkArgs {
   list: string;
-  subject: string;
-  from: string;
+  /** Optional if the `md` frontmatter sets `subject`; an explicit value wins. */
+  subject?: string;
+  /** Optional if the `md` frontmatter sets `from`; an explicit value wins. */
+  from?: string;
   md?: string;
   html?: string;
   text?: string;
@@ -187,16 +262,24 @@ export class Minigun {
     if (args.md == null && args.html == null) {
       throw new Error('either md or html is required');
     }
+    // Markdown frontmatter fills subject/preheader/from/replyTo when the
+    // caller left them empty; the block is stripped from the body.
+    const fm = parseFrontmatter(args.md);
+    const subject = firstNonEmpty(args.subject, fm.subject);
+    const from = firstNonEmpty(args.from, fm.from);
+    if (!subject || !from) {
+      throw new Error('subject and from are required (pass them or set them in the md frontmatter)');
+    }
     return this.post('/send/single', {
       to: args.to,
-      from: args.from,
-      subject: args.subject,
-      preheader: args.preheader ?? '',
+      from,
+      subject,
+      preheader: firstNonEmpty(args.preheader, fm.preheader),
       company: args.company,
       list: args.list ?? '',
-      reply_to: args.replyTo ?? '',
+      reply_to: firstNonEmpty(args.replyTo, fm.replyTo),
       domain: args.domain ?? '',
-      md: args.md ?? '',
+      md: fm.body,
       html: args.html ?? '',
       text: args.text ?? '',
       template: args.template ?? '',
@@ -216,6 +299,14 @@ export class Minigun {
     if (args.md == null && args.html == null) {
       throw new Error('either md or html is required');
     }
+    // Markdown frontmatter fills subject/preheader/from/replyTo when the
+    // caller left them empty; the block is stripped from the body.
+    const fm = parseFrontmatter(args.md);
+    const subject = firstNonEmpty(args.subject, fm.subject);
+    const from = firstNonEmpty(args.from, fm.from);
+    if (!subject || !from) {
+      throw new Error('subject and from are required (pass them or set them in the md frontmatter)');
+    }
     const unsubMode: UnsubMode = args.unsubMode ?? UNSUB_LOCAL;
     if (unsubMode !== UNSUB_LOCAL && unsubMode !== UNSUB_REDIRECT && unsubMode !== UNSUB_EXTERNAL) {
       throw new Error("unsubMode must be 'local', 'redirect', or 'external'");
@@ -229,12 +320,12 @@ export class Minigun {
 
     return this.post('/send/bulk', {
       list: args.list,
-      subject: args.subject,
-      from: args.from,
-      reply_to: args.replyTo ?? '',
-      preheader: args.preheader ?? '',
+      subject,
+      from,
+      reply_to: firstNonEmpty(args.replyTo, fm.replyTo),
+      preheader: firstNonEmpty(args.preheader, fm.preheader),
       domain: args.domain ?? '',
-      md: args.md ?? '',
+      md: fm.body,
       html: args.html ?? '',
       text: args.text ?? '',
       template: args.template ?? '',

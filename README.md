@@ -39,7 +39,7 @@ Also packaged as a single Go binary or a Docker container if you'd rather host i
 
 | Feature | What you get | Deep dive |
 |---|---|---|
-| **Markdown authoring** | Write emails in Markdown with `{{first_name \| "there"}}` variable defaults. Rendered to HTML + text, no MJML, no HTML builder, no second template language. | [below](#markdown-first-authoring) |
+| **Markdown authoring** | Write emails in Markdown with `{{first_name \| "there"}}` variable defaults. Optional `---` frontmatter sets `subject` / `from` / `preheader` / `reply_to` right in the file. Rendered to HTML + text, no MJML, no HTML builder, no second template language. | [below](#markdown-first-authoring) |
 | **Crash-safe bulk sends** | 100k-recipient sends that survive worker restarts and resume from the last completed batch — on a Cloudflare Worker with no long-running process. | [below](#bulk-email-on-the-cloudflare-edge) |
 | **Scheduled sends** | `--send-at <RFC3339>` parks a bulk or single send until a background dispatcher fires it. No Mailgun 3-day cap; `send cancel` unschedules it. Bulk audience resolves at dispatch, so late signups are included. | [docs/cli.md](./docs/cli.md#minigun-send-bulk) |
 | **Automatic list hygiene** | Hard bounces and spam complaints purge themselves in real time via a signed Mailgun webhook; an engagement-based prune unsubscribes dormant contacts on three configurable signals. Your list self-heals. | [docs/list-hygiene.md](./docs/list-hygiene.md) |
@@ -212,6 +212,27 @@ Text: Unsubscribe:
 ```
 
 No MJML. No HTML email builder. No second template language. Just Markdown.
+
+Single newlines are honored as line breaks (so a list of short lines renders one per line); separate paragraphs with a blank line.
+
+**Frontmatter.** Start the Markdown with a `---` fenced block (three or more dashes) and the CLI, MCP tools, and all four SDKs read the per-send headers straight from the file — so `--subject` / `--from` / `--preheader` / `--reply-to` become optional:
+
+```markdown
+---
+subject: "Tuesday digest — what's new"
+preheader: A quick look at this week's releases
+from: Ran <ran@example.com>
+reply_to: support@example.com
+---
+
+Hi {{first_name | "there"}}, ...
+```
+
+```bash
+minigun send bulk --list weekly --md ./week-12.md   # subject/from/preheader all come from the file
+```
+
+An explicit flag/argument always wins; the block is stripped from the body so it never renders into the email; unknown keys are ignored. It's a client-side authoring convenience — the HTTP API still takes these as explicit fields. See [docs/cli.md](./docs/cli.md#markdown-frontmatter).
 
 ### Automatic list hygiene
 

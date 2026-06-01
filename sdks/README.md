@@ -48,6 +48,21 @@ The split matters for retry policy. Transport errors are often worth retrying wi
 
 **Body-or-file pairs for sends.** The send methods accept `md` *or* `md_file` (and similarly for `html`, `text`, `template`). Pass at most one of each pair — passing both raises a validation error. Files are read synchronously at call time.
 
+**Markdown frontmatter.** When the resolved Markdown body starts with a YAML-style fence (a line of three or more dashes, e.g. `---` or `-----`), the send methods read `subject`, `preheader`, `from`, and `reply_to` from it, so those arguments become optional. An explicit argument always wins; frontmatter only fills what you left empty, and the block is stripped from the body before sending so it never renders into the email. Unknown keys are ignored; quoted values are unquoted. If neither an argument nor frontmatter supplies `subject` and `from`, the SDK raises its local validation error.
+
+```
+---
+subject: "Tuesday digest"
+preheader: A quick look at this week's releases
+from: Ran <ran@example.com>
+reply_to: support@example.com
+---
+
+Hi {{first_name | "there"}}, ...
+```
+
+This mirrors the CLI/MCP behavior. The HTTP API itself takes `subject`/`from`/etc. as explicit fields — frontmatter is a client-side authoring convenience.
+
 ## When to use the HTTP API directly instead
 
 These SDKs handle the request shapes, the bearer auth, the error decoding, and the body-or-file ergonomics — i.e. the boilerplate. There's nothing you can do via these SDKs that you can't do with a hand-rolled `curl` or `fetch` call.

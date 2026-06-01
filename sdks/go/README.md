@@ -125,6 +125,8 @@ res, err := mg.SendBulk(ctx, minigun.SendBulkArgs{
 })
 ```
 
+`Subject` and `From` may be left empty when the Markdown body supplies them via frontmatter (a leading `---`/`-----` fenced block with `subject:` / `from:` / `preheader:` / `reply_to:`). An explicit field wins; the block is stripped from the body. If neither the field nor frontmatter supplies `Subject` and `From`, `SendSingle`/`SendBulk` return an error.
+
 For each body field there's a value-or-file pair:
 
 | Direct (string) | File path (string) |

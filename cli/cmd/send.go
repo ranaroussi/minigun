@@ -6,10 +6,37 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/ranaroussi/minigun/cli/internal/frontmatter"
 	"github.com/spf13/cobra"
 )
+
+// firstNonEmpty returns explicit if it has non-whitespace content, else fallback.
+func firstNonEmpty(explicit, fallback string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	return fallback
+}
+
+// requireSubjectFrom validates the two fields that may come from either a flag
+// or Markdown frontmatter, after the merge. Reported together so the operator
+// sees every missing value at once.
+func requireSubjectFrom(subject, from string) error {
+	var missing []string
+	if strings.TrimSpace(subject) == "" {
+		missing = append(missing, "subject")
+	}
+	if strings.TrimSpace(from) == "" {
+		missing = append(missing, "from")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%s required: pass the flag(s) or set them in the markdown frontmatter", strings.Join(missing, " and "))
+	}
+	return nil
+}
 
 var (
 	bulkList       string
@@ -73,12 +100,20 @@ var sendBulkCmd = &cobra.Command{
 			}
 			template = string(b)
 		}
+		// Markdown frontmatter fills in subject/preheader/from/reply_to when
+		// the flag wasn't passed; the block is stripped from the body.
+		md, fm := frontmatter.Parse(md)
+		subject := firstNonEmpty(bulkSubject, fm.Subject)
+		from := firstNonEmpty(bulkFrom, fm.From)
+		if err := requireSubjectFrom(subject, from); err != nil {
+			return err
+		}
 		body := map[string]any{
 			"list":         bulkList,
-			"subject":      bulkSubject,
-			"preheader":    bulkPreheader,
-			"from":         bulkFrom,
-			"reply_to":     bulkReplyTo,
+			"subject":      subject,
+			"preheader":    firstNonEmpty(bulkPreheader, fm.Preheader),
+			"from":         from,
+			"reply_to":     firstNonEmpty(bulkReplyTo, fm.ReplyTo),
 			"md":           md,
 			"html":         html,
 			"text":         text,
@@ -122,12 +157,20 @@ var sendSingleCmd = &cobra.Command{
 			}
 			template = string(b)
 		}
+		// Markdown frontmatter fills in subject/preheader/from/reply_to when
+		// the flag wasn't passed; the block is stripped from the body.
+		md, fm := frontmatter.Parse(md)
+		subject := firstNonEmpty(singleSubject, fm.Subject)
+		from := firstNonEmpty(singleFrom, fm.From)
+		if err := requireSubjectFrom(subject, from); err != nil {
+			return err
+		}
 		body := map[string]any{
 			"to":        singleTo,
-			"subject":   singleSubject,
-			"preheader": singlePreheader,
-			"from":      singleFrom,
-			"reply_to":  singleReplyTo,
+			"subject":   subject,
+			"preheader": firstNonEmpty(singlePreheader, fm.Preheader),
+			"from":      from,
+			"reply_to":  firstNonEmpty(singleReplyTo, fm.ReplyTo),
 			"company":   singleCompany,
 			"list":      singleList,
 			"md":        md,
@@ -468,8 +511,8 @@ func init() {
 	sendBulkCmd.Flags().BoolVar(&bulkTestMode, "testmode", false, "Mailgun test mode: messages are accepted and logged but not delivered. Useful for dry runs.")
 	sendBulkCmd.Flags().StringVar(&bulkSendAt, "send-at", "", "Schedule the send for a future RFC3339 time (e.g. 2026-06-01T09:00:00Z). Omit to send now. Cancel with 'send cancel'.")
 	_ = sendBulkCmd.MarkFlagRequired("list")
-	_ = sendBulkCmd.MarkFlagRequired("subject")
-	_ = sendBulkCmd.MarkFlagRequired("from")
+	// subject/from are not marked required: they may be supplied via Markdown
+	// frontmatter instead. The RunE validates after the frontmatter merge.
 
 	sendSingleCmd.Flags().StringVar(&singleTo, "to", "", "Recipient email")
 	sendSingleCmd.Flags().StringVar(&singleSubject, "subject", "", "Email subject")
@@ -486,9 +529,9 @@ func init() {
 	sendSingleCmd.Flags().BoolVar(&singleTestMode, "testmode", false, "Mailgun test mode: message is accepted and logged but not delivered. Useful for dry runs.")
 	sendSingleCmd.Flags().StringVar(&singleSendAt, "send-at", "", "Schedule the send for a future RFC3339 time (e.g. 2026-06-01T09:00:00Z). Omit to send now. Cancel with 'send cancel'.")
 	_ = sendSingleCmd.MarkFlagRequired("to")
-	_ = sendSingleCmd.MarkFlagRequired("subject")
-	_ = sendSingleCmd.MarkFlagRequired("from")
 	_ = sendSingleCmd.MarkFlagRequired("company")
+	// subject/from are not marked required: they may be supplied via Markdown
+	// frontmatter instead. The RunE validates after the frontmatter merge.
 
 	sendResumeCmd.Flags().BoolVar(&resumeForce, "force", false, "Resume even when in-flight batches are present (may cause duplicate sends)")
 

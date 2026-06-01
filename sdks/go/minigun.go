@@ -227,14 +227,23 @@ func (c *Client) SendSingle(ctx context.Context, args SendSingleArgs) (map[strin
 		return nil, errors.New("minigun: either MD/MDFile or HTML/HTMLFile is required")
 	}
 
+	// Markdown frontmatter fills Subject/Preheader/From/ReplyTo when the
+	// caller left them empty; the block is stripped from the body.
+	md, fm := parseFrontmatter(md)
+	subject := firstNonEmpty(args.Subject, fm.subject)
+	from := firstNonEmpty(args.From, fm.from)
+	if subject == "" || from == "" {
+		return nil, errors.New("minigun: Subject and From are required (set them on args or in the markdown frontmatter)")
+	}
+
 	return c.post(ctx, "/send/single", map[string]any{
 		"to":        args.To,
-		"from":      args.From,
-		"subject":   args.Subject,
-		"preheader": args.Preheader,
+		"from":      from,
+		"subject":   subject,
+		"preheader": firstNonEmpty(args.Preheader, fm.preheader),
 		"company":   args.Company,
 		"list":      args.List,
-		"reply_to":  args.ReplyTo,
+		"reply_to":  firstNonEmpty(args.ReplyTo, fm.replyTo),
 		"domain":    args.Domain,
 		"md":        md,
 		"html":      html,
@@ -301,6 +310,15 @@ func (c *Client) SendBulk(ctx context.Context, args SendBulkArgs) (map[string]an
 		return nil, errors.New("minigun: either MD/MDFile or HTML/HTMLFile is required")
 	}
 
+	// Markdown frontmatter fills Subject/Preheader/From/ReplyTo when the
+	// caller left them empty; the block is stripped from the body.
+	md, fm := parseFrontmatter(md)
+	subject := firstNonEmpty(args.Subject, fm.subject)
+	from := firstNonEmpty(args.From, fm.from)
+	if subject == "" || from == "" {
+		return nil, errors.New("minigun: Subject and From are required (set them on args or in the markdown frontmatter)")
+	}
+
 	unsubMode := args.UnsubMode
 	if unsubMode == "" {
 		unsubMode = UnsubLocal
@@ -329,10 +347,10 @@ func (c *Client) SendBulk(ctx context.Context, args SendBulkArgs) (map[string]an
 
 	return c.post(ctx, "/send/bulk", map[string]any{
 		"list":         args.List,
-		"subject":      args.Subject,
-		"from":         args.From,
-		"reply_to":     args.ReplyTo,
-		"preheader":    args.Preheader,
+		"subject":      subject,
+		"from":         from,
+		"reply_to":     firstNonEmpty(args.ReplyTo, fm.replyTo),
+		"preheader":    firstNonEmpty(args.Preheader, fm.preheader),
 		"domain":       args.Domain,
 		"md":           md,
 		"html":         html,
@@ -604,4 +622,97 @@ func resolveBody(name, direct, file string) (string, error) {
 		return "", fmt.Errorf("minigun: read %sFile %q: %w", name, file, err)
 	}
 	return string(b), nil
+}
+
+// frontmatter holds the per-send header keys read from a leading
+// "---" fenced block in a Markdown body.
+type frontmatter struct {
+	subject, preheader, from, replyTo string
+}
+
+// parseFrontmatter extracts a leading frontmatter block from md. It
+// returns the body with the block stripped and the recognized fields.
+// Recognized only when the first non-empty line is a fence (three or
+// more dashes) closed by a later fence line; otherwise md is returned
+// unchanged. Only subject/preheader/from/reply_to are read; other keys
+// are ignored. The block is always stripped so it never renders.
+func parseFrontmatter(md string) (string, frontmatter) {
+	src := strings.TrimPrefix(md, "\ufeff")
+	lines := strings.Split(src, "\n")
+
+	open := 0
+	for open < len(lines) && strings.TrimSpace(lines[open]) == "" {
+		open++
+	}
+	if open >= len(lines) || !isFence(lines[open]) {
+		return md, frontmatter{}
+	}
+	closing := -1
+	for j := open + 1; j < len(lines); j++ {
+		if isFence(lines[j]) {
+			closing = j
+			break
+		}
+	}
+	if closing < 0 {
+		return md, frontmatter{}
+	}
+
+	var fm frontmatter
+	for _, ln := range lines[open+1 : closing] {
+		ln = strings.TrimRight(ln, "\r")
+		c := strings.IndexByte(ln, ':')
+		if c < 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(ln[:c]))
+		val := unquote(strings.TrimSpace(ln[c+1:]))
+		switch key {
+		case "subject":
+			fm.subject = val
+		case "preheader":
+			fm.preheader = val
+		case "from":
+			fm.from = val
+		case "reply_to", "reply-to":
+			fm.replyTo = val
+		}
+	}
+
+	bodyLines := lines[closing+1:]
+	for len(bodyLines) > 0 && strings.TrimSpace(bodyLines[0]) == "" {
+		bodyLines = bodyLines[1:]
+	}
+	return strings.Join(bodyLines, "\n"), fm
+}
+
+// isFence reports whether a line is a frontmatter delimiter: three or
+// more dashes and nothing else (ignoring surrounding whitespace).
+func isFence(line string) bool {
+	s := strings.TrimSpace(line)
+	if len(s) < 3 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func unquote(s string) string {
+	if len(s) >= 2 {
+		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
+			return s[1 : len(s)-1]
+		}
+	}
+	return s
+}
+
+func firstNonEmpty(explicit, fallback string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return explicit
+	}
+	return fallback
 }

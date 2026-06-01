@@ -31,7 +31,7 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 __all__ = [
     "Minigun",
@@ -150,9 +150,9 @@ class Minigun:
         self,
         *,
         to: str,
-        from_: str,
-        subject: str,
         company: str,
+        from_: str = "",
+        subject: str = "",
         md: Optional[str] = None,
         md_file: Optional[str] = None,
         html: Optional[str] = None,
@@ -189,16 +189,26 @@ class Minigun:
         if md is None and html is None:
             raise ValueError("either md/md_file or html/html_file is required")
 
+        # Markdown frontmatter fills subject/preheader/from_/reply_to when the
+        # caller left them empty; the block is stripped from the body.
+        md, _fm = _parse_frontmatter(md)
+        subject = _first_nonempty(subject, _fm.get("subject", ""))
+        from_ = _first_nonempty(from_, _fm.get("from", ""))
+        if not subject or not from_:
+            raise ValueError(
+                "subject and from_ are required (pass them or set them in the markdown frontmatter)"
+            )
+
         return self._post(
             "/send/single",
             {
                 "to": to,
                 "from": from_,
                 "subject": subject,
-                "preheader": preheader or "",
+                "preheader": _first_nonempty(preheader, _fm.get("preheader", "")),
                 "company": company,
                 "list": list or "",
-                "reply_to": reply_to or "",
+                "reply_to": _first_nonempty(reply_to, _fm.get("reply_to", "")),
                 "domain": domain or "",
                 "md": md or "",
                 "html": html or "",
@@ -213,8 +223,8 @@ class Minigun:
         self,
         *,
         list: str,
-        subject: str,
-        from_: str,
+        subject: str = "",
+        from_: str = "",
         md: Optional[str] = None,
         md_file: Optional[str] = None,
         html: Optional[str] = None,
@@ -255,14 +265,24 @@ class Minigun:
         if unsub_mode == UNSUB_EXTERNAL and not unsub_url:
             raise ValueError("unsub_url is required when unsub_mode='external'")
 
+        # Markdown frontmatter fills subject/preheader/from_/reply_to when the
+        # caller left them empty; the block is stripped from the body.
+        md, _fm = _parse_frontmatter(md)
+        subject = _first_nonempty(subject, _fm.get("subject", ""))
+        from_ = _first_nonempty(from_, _fm.get("from", ""))
+        if not subject or not from_:
+            raise ValueError(
+                "subject and from_ are required (pass them or set them in the markdown frontmatter)"
+            )
+
         return self._post(
             "/send/bulk",
             {
                 "list": list,
                 "subject": subject,
                 "from": from_,
-                "reply_to": reply_to or "",
-                "preheader": preheader or "",
+                "reply_to": _first_nonempty(reply_to, _fm.get("reply_to", "")),
+                "preheader": _first_nonempty(preheader, _fm.get("preheader", "")),
                 "domain": domain or "",
                 "md": md or "",
                 "html": html or "",
@@ -496,3 +516,70 @@ def _resolve_body(name: str, direct: Optional[str], file: Optional[str]) -> Opti
         raise ValueError(f"{name}_file '{file}' does not exist")
     with open(file, "r", encoding="utf-8") as fh:
         return fh.read()
+
+
+def _is_fence(line: str) -> bool:
+    """A frontmatter delimiter: three or more dashes and nothing else."""
+    s = line.strip()
+    return len(s) >= 3 and set(s) == {"-"}
+
+
+def _unquote(s: str) -> str:
+    if len(s) >= 2 and (
+        (s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")
+    ):
+        return s[1:-1]
+    return s
+
+
+def _parse_frontmatter(md: Optional[str]) -> Tuple[str, Dict[str, str]]:
+    """Extract a leading "---" fenced frontmatter block from a Markdown
+    body. Recognized only when the first non-empty line is a fence (three
+    or more dashes) closed by a later fence line; otherwise the body is
+    returned unchanged. Only subject/preheader/from/reply_to are read;
+    other keys are ignored. The block is always stripped so it never
+    renders into the email."""
+    if not md:
+        return md or "", {}
+    src = md[1:] if md.startswith("\ufeff") else md
+    lines = src.split("\n")
+
+    open_i = 0
+    while open_i < len(lines) and lines[open_i].strip() == "":
+        open_i += 1
+    if open_i >= len(lines) or not _is_fence(lines[open_i]):
+        return md, {}
+
+    closing = -1
+    for j in range(open_i + 1, len(lines)):
+        if _is_fence(lines[j]):
+            closing = j
+            break
+    if closing < 0:
+        return md, {}
+
+    meta: Dict[str, str] = {}
+    for raw in lines[open_i + 1 : closing]:
+        ln = raw.rstrip("\r")
+        c = ln.find(":")
+        if c < 0:
+            continue
+        key = ln[:c].strip().lower()
+        val = _unquote(ln[c + 1 :].strip())
+        if key == "subject":
+            meta["subject"] = val
+        elif key == "preheader":
+            meta["preheader"] = val
+        elif key == "from":
+            meta["from"] = val
+        elif key in ("reply_to", "reply-to"):
+            meta["reply_to"] = val
+
+    body_lines = lines[closing + 1 :]
+    while body_lines and body_lines[0].strip() == "":
+        body_lines = body_lines[1:]
+    return "\n".join(body_lines), meta
+
+
+def _first_nonempty(explicit: Optional[str], fallback: str) -> str:
+    return explicit if (explicit or "").strip() else fallback

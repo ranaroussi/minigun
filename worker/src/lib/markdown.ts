@@ -1,6 +1,8 @@
 import { marked } from 'marked';
 
-marked.setOptions({ gfm: true, breaks: false });
+// breaks: true honors single newlines as <br>, matching how email authors
+// write one line per thought (GitHub-comment style).
+marked.setOptions({ gfm: true, breaks: true });
 
 export function markdownToHTML(src: string): string {
   return marked.parse(src, { async: false }) as string;

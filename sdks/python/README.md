@@ -93,7 +93,8 @@ mg.list_contacts(list: str, cursor: str | None = None, limit: int = 50) -> dict
 ```python
 mg.send_single(
     *,
-    to: str, from_: str, subject: str, company: str,
+    to: str, company: str,
+    from_: str = "", subject: str = "",   # optional — may come from md frontmatter
     md: str | None = None,       md_file: str | None = None,
     html: str | None = None,     html_file: str | None = None,
     text: str | None = None,     text_file: str | None = None,
@@ -107,7 +108,8 @@ mg.send_single(
 
 mg.send_bulk(
     *,
-    list: str, subject: str, from_: str,
+    list: str,
+    subject: str = "", from_: str = "",   # optional — may come from md frontmatter
     # ...same body-or-file pairs as send_single...
     batch_size: int = 500,
     throttle_ms: int = 1000,
@@ -139,6 +141,8 @@ mg.send_bulk(
 > `list` shadows the `list` builtin but only as a parameter name inside the call — it has no effect on your surrounding code.
 
 For each body field there's a value-or-file pair (e.g. `md` / `md_file`). Pass at most one; passing both raises `ValueError`.
+
+`subject` and `from_` default to `""` because they can be supplied via the Markdown frontmatter (a leading `---`/`-----` fenced block with `subject:` / `from:` / `preheader:` / `reply_to:`). An explicit argument wins; the block is stripped from the body. If neither the argument nor frontmatter supplies `subject` and `from_`, a `ValueError` is raised.
 
 Unsubscribe-mode constants are exported from the module:
 

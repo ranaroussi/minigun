@@ -127,10 +127,15 @@ class Minigun
     /**
      * Send a single transactional email.
      *
-     * Required: $to, $from, $subject, $company, and one of $md/$mdFile
-     * or $html/$htmlFile. $company is the company id or slug — MiniGun
-     * resolves the sending domain from it. Pass $domain to override for
-     * this one send.
+     * Required: $to, $company, and one of $md/$mdFile or $html/$htmlFile.
+     * $from and $subject are required too, but may be supplied via the
+     * Markdown frontmatter instead of the arguments (an explicit argument
+     * wins). $company is the company id or slug — MiniGun resolves the
+     * sending domain from it. Pass $domain to override for this one send.
+     *
+     * Use named arguments (PHP 8+) so you can skip the optional $from/
+     * $subject and still pass later params, e.g.
+     *   $mg->sendSingle(to: $to, company: $co, mdFile: $path);
      *
      * Each body part has a "string or file path" pair. Pass at most one
      * of each pair; passing both throws. Files are read via
@@ -143,9 +148,9 @@ class Minigun
      */
     public function sendSingle(
         string  $to,
-        string  $from,
-        string  $subject,
         string  $company,
+        string  $from         = '',
+        string  $subject      = '',
         ?string $md           = null,
         ?string $mdFile       = null,
         ?string $html         = null,
@@ -170,14 +175,25 @@ class Minigun
             throw new \InvalidArgumentException('either $md/$mdFile or $html/$htmlFile is required');
         }
 
+        // Markdown frontmatter fills $subject/$preheader/$from/$replyTo when
+        // the caller left them empty; the block is stripped from the body.
+        [$md, $fm] = $this->parseFrontmatter($md);
+        $subject = $this->firstNonEmpty($subject, $fm['subject'] ?? '');
+        $from    = $this->firstNonEmpty($from,    $fm['from']    ?? '');
+        if ($subject === '' || $from === '') {
+            throw new \InvalidArgumentException(
+                '$subject and $from are required (pass them or set them in the markdown frontmatter)'
+            );
+        }
+
         return $this->post('/send/single', [
             'to'        => $to,
             'from'      => $from,
             'subject'   => $subject,
-            'preheader' => $preheader ?? '',
+            'preheader' => $this->firstNonEmpty($preheader, $fm['preheader'] ?? ''),
             'company'   => $company,
             'list'      => $list      ?? '',
-            'reply_to'  => $replyTo   ?? '',
+            'reply_to'  => $this->firstNonEmpty($replyTo, $fm['reply_to'] ?? ''),
             'domain'    => $domain    ?? '',
             'md'        => $md        ?? '',
             'html'      => $html      ?? '',
@@ -191,7 +207,9 @@ class Minigun
     /**
      * Trigger a bulk send to a list.
      *
-     * Required: $list (slug or id), $subject, $from, and one of $md / $html.
+     * Required: $list (slug or id) and one of $md / $html. $subject and
+     * $from are required too, but may be supplied via the Markdown
+     * frontmatter instead of the arguments (an explicit argument wins).
      * Returns 202 with a send_id while the worker drives batches in the
      * background. The first batch runs inline before the 202, so the
      * response time scales with batch_size + Mailgun's latency.
@@ -200,8 +218,8 @@ class Minigun
      */
     public function sendBulk(
         string  $list,
-        string  $subject,
-        string  $from,
+        string  $subject      = '',
+        string  $from         = '',
         ?string $md           = null,
         ?string $mdFile       = null,
         ?string $html         = null,
@@ -240,12 +258,23 @@ class Minigun
             throw new \InvalidArgumentException("unsubUrl is required when unsubMode='external'");
         }
 
+        // Markdown frontmatter fills $subject/$preheader/$from/$replyTo when
+        // the caller left them empty; the block is stripped from the body.
+        [$md, $fm] = $this->parseFrontmatter($md);
+        $subject = $this->firstNonEmpty($subject, $fm['subject'] ?? '');
+        $from    = $this->firstNonEmpty($from,    $fm['from']    ?? '');
+        if ($subject === '' || $from === '') {
+            throw new \InvalidArgumentException(
+                '$subject and $from are required (pass them or set them in the markdown frontmatter)'
+            );
+        }
+
         return $this->post('/send/bulk', [
             'list'         => $list,
             'subject'      => $subject,
             'from'         => $from,
-            'reply_to'     => $replyTo    ?? '',
-            'preheader'    => $preheader  ?? '',
+            'reply_to'     => $this->firstNonEmpty($replyTo, $fm['reply_to'] ?? ''),
+            'preheader'    => $this->firstNonEmpty($preheader, $fm['preheader'] ?? ''),
             'domain'       => $domain     ?? '',
             'md'           => $md         ?? '',
             'html'         => $html       ?? '',
@@ -287,6 +316,93 @@ class Minigun
             throw new \RuntimeException("failed to read {$name}File '{$file}'");
         }
         return $contents;
+    }
+
+    /**
+     * Extract a leading "---" fenced frontmatter block from a Markdown body.
+     * Recognized only when the first non-empty line is a fence (three or more
+     * dashes) closed by a later fence line; otherwise the body is returned
+     * unchanged. Only subject/preheader/from/reply_to are read; other keys
+     * are ignored. The block is always stripped so it never renders.
+     *
+     * @return array{0: string, 1: array<string,string>} [body, meta]
+     */
+    private function parseFrontmatter(?string $md): array
+    {
+        if ($md === null || $md === '') {
+            return [$md ?? '', []];
+        }
+        $src   = (substr($md, 0, 3) === "\xEF\xBB\xBF") ? substr($md, 3) : $md;
+        $lines = explode("\n", $src);
+        $n     = count($lines);
+
+        $open = 0;
+        while ($open < $n && trim($lines[$open]) === '') {
+            $open++;
+        }
+        if ($open >= $n || !$this->isFence($lines[$open])) {
+            return [$md, []];
+        }
+
+        $closing = -1;
+        for ($j = $open + 1; $j < $n; $j++) {
+            if ($this->isFence($lines[$j])) {
+                $closing = $j;
+                break;
+            }
+        }
+        if ($closing < 0) {
+            return [$md, []];
+        }
+
+        $meta = [];
+        for ($i = $open + 1; $i < $closing; $i++) {
+            $ln = rtrim($lines[$i], "\r");
+            $c  = strpos($ln, ':');
+            if ($c === false) {
+                continue;
+            }
+            $key = strtolower(trim(substr($ln, 0, $c)));
+            $val = $this->unquote(trim(substr($ln, $c + 1)));
+            switch ($key) {
+                case 'subject':   $meta['subject']   = $val; break;
+                case 'preheader': $meta['preheader'] = $val; break;
+                case 'from':      $meta['from']      = $val; break;
+                case 'reply_to':
+                case 'reply-to':  $meta['reply_to']  = $val; break;
+            }
+        }
+
+        $body = array_slice($lines, $closing + 1);
+        while (count($body) > 0 && trim($body[0]) === '') {
+            array_shift($body);
+        }
+        return [implode("\n", $body), $meta];
+    }
+
+    /** A frontmatter delimiter: three or more dashes and nothing else. */
+    private function isFence(string $line): bool
+    {
+        $s = trim($line);
+        return strlen($s) >= 3 && trim($s, '-') === '';
+    }
+
+    private function unquote(string $s): string
+    {
+        $len = strlen($s);
+        if ($len >= 2) {
+            $a = $s[0];
+            $b = $s[$len - 1];
+            if (($a === '"' && $b === '"') || ($a === "'" && $b === "'")) {
+                return substr($s, 1, $len - 2);
+            }
+        }
+        return $s;
+    }
+
+    private function firstNonEmpty(?string $explicit, string $fallback): string
+    {
+        return ($explicit !== null && trim($explicit) !== '') ? $explicit : $fallback;
     }
 
     /**
