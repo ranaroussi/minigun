@@ -149,6 +149,48 @@ minigun send single \
 
 Single transactional sends don't belong to a list, so `--company` is required: MiniGun resolves the sending domain from `company.sending_domain`. Pass `--domain` to override. `--testmode` works here too, as does `--send-at` (same parking/dispatch/cancel mechanics as bulk; a single send targets one explicit recipient, so there's no audience to resolve — it sends to that address when it fires).
 
+### Body and wrapper template
+
+Both `send bulk` and `send single` build the message from the same set of body flags. You must supply **either `--md` or `--html`**; the rest are optional.
+
+| Flag | What it does |
+|------|--------------|
+| `--md <file>` | Markdown body. Rendered to HTML **and** plain text, with `{{first_name \| "there"}}`-style placeholders rewritten into Mailgun recipient variables. |
+| `--html <file>` | Pre-built HTML body, used when `--md` is omitted. MiniGun rewrites `{{var}}` placeholders and ensures an unsubscribe footer, but does **not** wrap it — you own the full document. |
+| `--text <file>` | Optional plain-text part. Auto-derived from the Markdown / HTML when omitted. |
+| `--preheader <text>` | Hidden inbox-preview snippet. |
+| `--template <file>` | An HTML **wrapper** applied around the rendered Markdown body. |
+
+The `--template` file is read by the CLI and sent to the server, which wraps the rendered Markdown into it. The wrapper is substituted with these placeholders (spaced forms like `{{ content }}` work too):
+
+- `{{content}}` — **required**; replaced with the rendered Markdown body.
+- `{{subject}}` / `{{preheader}}` — replaced with the send's subject / preheader.
+- `{{unsubscribe}}` (or `{{unsub_url}}`) — optional. If the wrapper already contains an unsubscribe link, MiniGun skips its default auto-footer instead of double-injecting one.
+
+The wrapper applies to the **Markdown path only** (`--md`). When you pass raw `--html`, you already control the whole document, so `--template` is ignored. Example:
+
+```html
+<!-- layout.html -->
+<html>
+  <head><title>{{subject}}</title></head>
+  <body>
+    <header><img src="https://example.com/logo.png" alt="Acme"></header>
+    {{content}}
+    <footer><a href="{{unsubscribe}}">Unsubscribe</a></footer>
+  </body>
+</html>
+```
+
+```bash
+minigun send bulk --list newsletter --subject "Weekly update" \
+  --from "Ran <ran@example.com>" --md ./week-12.md --template ./layout.html
+
+minigun send single --to you@example.com --company acme --subject "Welcome" \
+  --from "Ran <ran@example.com>" --md ./welcome.md --template ./layout.html
+```
+
+When `--template` is omitted, MiniGun uses a clean built-in default wrapper.
+
 ### `minigun send cancel <id>`
 
 Unschedule a send that hasn't started yet — i.e. one still in `scheduled` (future-dated) or `queued` — by transitioning it to `cancelled`:

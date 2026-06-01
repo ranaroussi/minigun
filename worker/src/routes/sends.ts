@@ -113,7 +113,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
     let bodyHTML: string;
     let bodyText: string;
     if (body.md) {
-      const built = buildBody(body.md, '', body.subject, body.preheader ?? '');
+      const built = buildBody(body.md, body.template ?? '', body.subject, body.preheader ?? '');
       bodyHTML = built.html;
       bodyText = built.text;
     } else {

@@ -78,7 +78,7 @@ func (s *Server) handleBulkSend(w http.ResponseWriter, r *http.Request) {
 
 	var bodyHTML, bodyText string
 	if req.MD != "" {
-		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, "", req.Subject, req.Preheader, true)
+		bodyHTML, bodyText, _, err = render.BuildBody(req.MD, req.Template, req.Subject, req.Preheader, true)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

@@ -65,6 +65,14 @@ var sendBulkCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		var template string
+		if bulkTemplate != "" {
+			b, e := os.ReadFile(bulkTemplate)
+			if e != nil {
+				return fmt.Errorf("read --template: %w", e)
+			}
+			template = string(b)
+		}
 		body := map[string]any{
 			"list":         bulkList,
 			"subject":      bulkSubject,
@@ -74,7 +82,7 @@ var sendBulkCmd = &cobra.Command{
 			"md":           md,
 			"html":         html,
 			"text":         text,
-			"template":     bulkTemplate,
+			"template":     template,
 			"batch_size":   bulkBatchSize,
 			"throttle_ms":  bulkThrottleMS,
 			"notify_email": bulkNotifyTo,
@@ -450,7 +458,7 @@ func init() {
 	sendBulkCmd.Flags().StringVar(&bulkMDFile, "md", "", "Markdown body file")
 	sendBulkCmd.Flags().StringVar(&bulkHTMLFile, "html", "", "HTML body file (used if --md is not provided)")
 	sendBulkCmd.Flags().StringVar(&bulkTextFile, "text", "", "Plain-text body file (optional; auto-generated from --md/--html otherwise)")
-	sendBulkCmd.Flags().StringVar(&bulkTemplate, "template", "", "Wrapper template name")
+	sendBulkCmd.Flags().StringVar(&bulkTemplate, "template", "", "HTML wrapper template file ({{content}} is replaced with the rendered body)")
 	sendBulkCmd.Flags().IntVar(&bulkBatchSize, "batch-size", 500, "Mailgun batch size")
 	sendBulkCmd.Flags().IntVar(&bulkThrottleMS, "throttle-ms", 1000, "Sleep between batches in ms")
 	sendBulkCmd.Flags().StringVar(&bulkNotifyTo, "notify", "", "Email to notify on completion or failure")
