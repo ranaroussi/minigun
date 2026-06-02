@@ -24,6 +24,15 @@ database_name = "minigun"
 database_id = "a49bd078-d9ea-43bb-9b65-bbf5dea16412"
 migrations_dir = "migrations"
 
+# Service binding to this same Worker. The batch-send chain (scheduleNextStep
+# + cron sweeps) invokes /send/:id/next through env.SELF, which re-enters the
+# Worker directly. A plain fetch() to the Worker's own public route
+# (mailer.misc.sh) is not routed back into the Worker, which silently stalled
+# every multi-batch send after batch 0. See src/env.ts (selfCall).
+[[services]]
+binding = "SELF"
+service = "minigun"
+
 # Cron Trigger fires every minute to sweep for bulk sends stuck in `running`
 # for > 2 minutes and nudges them back into the self-call step loop.
 # See worker/src/send/cron.ts (sweepStuckSends) for the watchdog logic.

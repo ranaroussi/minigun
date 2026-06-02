@@ -1,4 +1,4 @@
-import { Env, publicURL } from '../env';
+import { Env, selfCall } from '../env';
 import { sendMessageWithRetry } from '../lib/mailgun';
 import {
   createBatch,
@@ -114,15 +114,14 @@ export function scheduleNextStep(
   sendID: string,
   throttleMs: number,
 ): void {
-  const url = `${publicURL(env)}/send/${sendID}/next`;
   ctx.waitUntil(
     (async () => {
       if (throttleMs > 0) await new Promise((r) => setTimeout(r, throttleMs));
       try {
-        await fetch(url, {
-          method: 'POST',
-          headers: { 'x-internal-secret': env.MINIGUN_INTERNAL_SECRET },
-        });
+        const resp = await selfCall(env, `/send/${sendID}/next`);
+        if (!resp.ok) {
+          console.error('self-call non-ok', sendID, resp.status, await resp.text());
+        }
       } catch (err) {
         console.error('self-call failed', sendID, err);
       }

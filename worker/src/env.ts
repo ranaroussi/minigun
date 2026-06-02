@@ -1,6 +1,13 @@
 export type Env = {
   DB: D1Database;
 
+  // Service binding to this same Worker. Used to drive the batch-send chain
+  // (scheduleNextStep + cron sweeps) by invoking the Worker directly instead
+  // of fetch()-ing its own public hostname — a request to a Worker's own
+  // route is not reliably routed back into the Worker (the "loopback"
+  // problem), which silently stalled every multi-batch send.
+  SELF: Fetcher;
+
   MINIGUN_PUBLIC_URL: string;
   MAILGUN_REGION?: string;
   MAILGUN_API_BASE?: string;
@@ -65,4 +72,20 @@ export function mailgunApiBase(env: Env): string {
 
 export function publicURL(env: Env): string {
   return (env.MINIGUN_PUBLIC_URL ?? '').replace(/\/$/, '');
+}
+
+// selfCall invokes one of this Worker's own internal endpoints (e.g.
+// /send/:id/next) through the SELF service binding. This re-enters the
+// Worker directly, avoiding the same-Worker loopback that drops a request
+// made to the Worker's own public route. The host in the URL is irrelevant
+// for a service binding (it routes by binding, not DNS), so we use a fixed
+// internal host. The x-internal-secret header satisfies bearerAuth's
+// internal-path bypass.
+export function selfCall(env: Env, path: string): Promise<Response> {
+  return env.SELF.fetch(
+    new Request(`https://minigun.internal${path}`, {
+      method: 'POST',
+      headers: { 'x-internal-secret': env.MINIGUN_INTERNAL_SECRET },
+    }),
+  );
 }

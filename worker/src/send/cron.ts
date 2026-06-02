@@ -1,4 +1,4 @@
-import { Env, publicURL } from '../env';
+import { Env, selfCall } from '../env';
 import { listDueScheduledSends, listStuckSends } from '../store/sends';
 
 const STALE_MS = 2 * 60 * 1000;
@@ -14,10 +14,8 @@ export async function sweepStuckSends(env: Env): Promise<void> {
   }
   for (const snd of stuck) {
     try {
-      await fetch(`${publicURL(env)}/send/${snd.id}/next`, {
-        method: 'POST',
-        headers: { 'x-internal-secret': env.MINIGUN_INTERNAL_SECRET },
-      });
+      const resp = await selfCall(env, `/send/${snd.id}/next`);
+      if (!resp.ok) console.error('cron kick non-ok', snd.id, resp.status);
     } catch (err) {
       console.error('cron kick', snd.id, err);
     }
@@ -38,10 +36,8 @@ export async function dispatchDueSends(env: Env): Promise<void> {
   }
   for (const snd of due) {
     try {
-      await fetch(`${publicURL(env)}/send/${snd.id}/next`, {
-        method: 'POST',
-        headers: { 'x-internal-secret': env.MINIGUN_INTERNAL_SECRET },
-      });
+      const resp = await selfCall(env, `/send/${snd.id}/next`);
+      if (!resp.ok) console.error('cron dispatch non-ok', snd.id, resp.status);
     } catch (err) {
       console.error('cron dispatch scheduled', snd.id, err);
     }
