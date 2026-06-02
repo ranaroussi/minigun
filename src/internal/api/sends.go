@@ -424,9 +424,19 @@ func (s *Server) handleGetSend(w http.ResponseWriter, r *http.Request) {
 	if remaining < 0 {
 		remaining = 0
 	}
+	listID, listSlug := "", ""
+	if snd.ListID != nil {
+		listID = *snd.ListID
+		if lst, lerr := s.store.GetListByID(r.Context(), listID); lerr == nil {
+			listSlug = lst.Slug
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id":     snd.ID,
-		"status": snd.Status,
+		"id":        snd.ID,
+		"subject":   snd.Subject,
+		"list_id":   listID,
+		"list_slug": listSlug,
+		"status":    snd.Status,
 		"progress": map[string]any{
 			"completed_batches":    completedBatches,
 			"total_batches":        totalBatches,

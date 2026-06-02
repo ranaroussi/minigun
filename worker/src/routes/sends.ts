@@ -335,8 +335,19 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         ? Math.ceil(snd.total_recipients / snd.batch_size)
         : 0;
     const remaining = Math.max(0, snd.total_recipients - sent);
+    let listSlug = '';
+    if (snd.list_id) {
+      try {
+        listSlug = (await resolveList(c.env.DB, snd.list_id)).slug;
+      } catch {
+        listSlug = '';
+      }
+    }
     return c.json({
       id: snd.id,
+      subject: snd.subject,
+      list_id: snd.list_id ?? '',
+      list_slug: listSlug,
       status: snd.status,
       progress: {
         completed_batches: completed,

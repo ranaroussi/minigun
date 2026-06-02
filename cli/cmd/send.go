@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/ranaroussi/minigun/cli/internal/client"
 	"github.com/ranaroussi/minigun/cli/internal/frontmatter"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // firstNonEmpty returns explicit if it has non-whitespace content, else fallback.
@@ -57,6 +61,7 @@ var (
 	bulkUnsubURL   string
 	bulkTestMode   bool
 	bulkSendAt     string
+	bulkNoProgress bool
 
 	singleTo           string
 	singleSubject      string
@@ -77,6 +82,8 @@ var (
 
 	statusWatch    bool
 	statusInterval time.Duration
+
+	progressInterval time.Duration
 )
 
 var sendCmd = &cobra.Command{
@@ -132,12 +139,34 @@ var sendBulkCmd = &cobra.Command{
 		if bulkSendAt != "" {
 			body["send_at"] = bulkSendAt
 		}
-		resp, err := newClient().Post("/send/bulk", body)
+		c := newClient()
+		resp, err := c.Post("/send/bulk", body)
 		if err != nil {
 			return err
 		}
 		printJSON(resp.Body)
-		return resp.Error()
+		if err := resp.Error(); err != nil {
+			return err
+		}
+		// After an immediate send (no --send-at), drop into the live progress
+		// view so the operator can watch it drain. Skipped for scheduled sends
+		// (nothing to watch yet), when opted out, or when stdout isn't a TTY
+		// (piped / CI) so we never spew ANSI escapes into a log.
+		if bulkSendAt != "" || bulkNoProgress || !term.IsTerminal(int(os.Stdout.Fd())) {
+			return nil
+		}
+		var created struct {
+			SendID string `json:"send_id"`
+			ID     string `json:"id"`
+		}
+		if e := json.Unmarshal(resp.Body, &created); e != nil {
+			return nil
+		}
+		id := firstNonEmpty(created.SendID, created.ID)
+		if id == "" {
+			return nil
+		}
+		return runProgress(c, id, time.Second)
 	},
 }
 
@@ -277,6 +306,125 @@ var sendStatusCmd = &cobra.Command{
 		}
 	},
 }
+
+type progressSnapshot struct {
+	ID        string  `json:"id"`
+	Subject   string  `json:"subject"`
+	ListID    string  `json:"list_id"`
+	ListSlug  string  `json:"list_slug"`
+	Status    string  `json:"status"`
+	CreatedAt string  `json:"created_at"`
+	UpdatedAt string  `json:"updated_at"`
+	LastError *string `json:"last_error"`
+	Progress  struct {
+		Sent             int `json:"sent"`
+		CompletedBatches int `json:"completed_batches"`
+		TotalBatches     int `json:"total_batches"`
+	} `json:"progress"`
+}
+
+// fmtTime renders an RFC3339 timestamp in local time; falls back to the raw
+// value (or an em dash when empty) so a malformed value never breaks the view.
+func fmtTime(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Local().Format("2006-01-02 15:04:05 MST")
+	}
+	return s
+}
+
+func renderProgress(s progressSnapshot) string {
+	list := "—"
+	if s.ListSlug != "" || s.ListID != "" {
+		switch {
+		case s.ListSlug != "" && s.ListID != "":
+			list = fmt.Sprintf("%s (%s)", s.ListSlug, s.ListID)
+		case s.ListSlug != "":
+			list = s.ListSlug
+		default:
+			list = s.ListID
+		}
+	}
+	lastErr := "—"
+	if s.LastError != nil && strings.TrimSpace(*s.LastError) != "" {
+		lastErr = *s.LastError
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Progress report:\n\n")
+	fmt.Fprintf(&b, "  Id:          %s\n", s.ID)
+	fmt.Fprintf(&b, "  Subject:     %s\n", firstNonEmpty(s.Subject, "—"))
+	fmt.Fprintf(&b, "  List:        %s\n\n", list)
+	fmt.Fprintf(&b, "  Created at:  %s\n", fmtTime(s.CreatedAt))
+	fmt.Fprintf(&b, "  Last update: %s\n", fmtTime(s.UpdatedAt))
+	fmt.Fprintf(&b, "  Status:      %s\n\n", s.Status)
+	fmt.Fprintf(&b, "  Progress:\n")
+	fmt.Fprintf(&b, "    Sent: %d\n", s.Progress.Sent)
+	fmt.Fprintf(&b, "    Batch: %d/%d\n\n", s.Progress.CompletedBatches, s.Progress.TotalBatches)
+	fmt.Fprintf(&b, "  Last Error:  %s\n", lastErr)
+	return b.String()
+}
+
+// runProgress drives the live, full-screen progress view for a send: it polls
+// GET /send/:id every interval, clearing and redrawing the report, until the
+// send reaches a terminal state or the user hits Ctrl+C. Shared by the
+// explicit `send progress` command and the auto-launch after `send bulk`.
+func runProgress(c *client.Client, id string, interval time.Duration) error {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	path := fmt.Sprintf("/send/%s", id)
+	// Restore the cursor on Ctrl+C so the terminal isn't left hidden.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	go func() {
+		<-sig
+		fmt.Print("\033[?25h\n")
+		os.Exit(0)
+	}()
+	fmt.Print("\033[?25l")       // hide cursor while live-updating
+	defer fmt.Print("\033[?25h") // show it again on normal exit
+	for {
+		resp, err := c.Get(path)
+		if err != nil {
+			return err
+		}
+		if err := resp.Error(); err != nil {
+			return err
+		}
+		var snap progressSnapshot
+		if err := json.Unmarshal(resp.Body, &snap); err != nil {
+			printJSON(resp.Body)
+			return err
+		}
+		fmt.Print("\033[H\033[2J") // cursor home + clear screen
+		fmt.Print(renderProgress(snap))
+		if terminal(snap.Status) {
+			return nil
+		}
+		time.Sleep(interval)
+	}
+}
+
+func newProgressCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "progress <send_id>",
+		Short: "Live, full-screen progress report for a send (refreshes every second until completed or Ctrl+C)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runProgress(newClient(), args[0], progressInterval)
+		},
+	}
+	c.Flags().DurationVar(&progressInterval, "interval", time.Second, "Refresh interval for the live progress report")
+	return c
+}
+
+// sendProgressCmd is the canonical `minigun send progress`; progressTopCmd is a
+// top-level `minigun progress` alias so both invocations work.
+var sendProgressCmd = newProgressCmd()
+var progressTopCmd = newProgressCmd()
 
 var sendStatsCmd = &cobra.Command{
 	Use:   "stats <send_id>",
@@ -510,6 +658,7 @@ func init() {
 	sendBulkCmd.Flags().StringVar(&bulkUnsubURL, "unsub-url", "", "External handler URL (for unsub-mode=external)")
 	sendBulkCmd.Flags().BoolVar(&bulkTestMode, "testmode", false, "Mailgun test mode: messages are accepted and logged but not delivered. Useful for dry runs.")
 	sendBulkCmd.Flags().StringVar(&bulkSendAt, "send-at", "", "Schedule the send for a future RFC3339 time (e.g. 2026-06-01T09:00:00Z). Omit to send now. Cancel with 'send cancel'.")
+	sendBulkCmd.Flags().BoolVar(&bulkNoProgress, "no-progress", false, "Don't auto-open the live progress view after an immediate send (default: open it when stdout is a terminal)")
 	_ = sendBulkCmd.MarkFlagRequired("list")
 	// subject/from are not marked required: they may be supplied via Markdown
 	// frontmatter instead. The RunE validates after the frontmatter merge.
@@ -546,6 +695,7 @@ func init() {
 	sendClicksCmd.Flags().StringVar(&clicksCursor, "cursor", "", "Opaque pagination cursor from a previous page's next_cursor")
 	sendClicksCmd.Flags().BoolVar(&clicksAll, "all", false, "Follow next_cursor and emit all click rows as one JSON array")
 
-	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendCancelCmd, sendStatusCmd, sendStatsCmd, sendRecipientsCmd, sendClicksCmd)
+	sendCmd.AddCommand(sendBulkCmd, sendSingleCmd, sendResumeCmd, sendCancelCmd, sendStatusCmd, sendProgressCmd, sendStatsCmd, sendRecipientsCmd, sendClicksCmd)
 	rootCmd.AddCommand(sendCmd)
+	rootCmd.AddCommand(progressTopCmd)
 }
