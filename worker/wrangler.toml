@@ -17,6 +17,10 @@ MINIGUN_PUBLIC_URL = "https://mailer.misc.sh"
 MAILGUN_REGION = "us"
 # Where to 302-redirect visitors who load GET / in a browser. Leave unset for a plain 404.
 REDIRECT_URL = "https://varops.com"
+# Gates engagement retrieval: the events-pull cron that folds Mailgun events
+# into the per-recipient rollups. Retrieval only — acting on the data
+# (pruning) is the separate LIST_HYGIENE_AUTO_PRUNE_ENABLED flag.
+ENGAGEMENT_STATS_ENABLED = "true"
 
 [[d1_databases]]
 binding = "DB"

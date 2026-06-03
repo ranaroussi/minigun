@@ -278,28 +278,46 @@ func (m *Manager) pullEventsForOneSendInternal(ctx context.Context, snd store.Du
 				}
 			}
 		}
+		// Durable per-page checkpoint: advance the watermark to the
+		// highest event timestamp seen so far WITHOUT bumping
+		// events_pulls_count, so a pull interrupted on the next page
+		// resumes after this one instead of restarting from beginMs.
+		if lastEventTs > 0 {
+			if cpErr := m.store.CheckpointEventPullThrough(ctx, snd.SendID, store.EventPullProgress{
+				LastPulledThroughMs: lastEventTs,
+				Inserted:            inserted,
+			}); cpErr != nil {
+				return inserted, pages, false, cpErr
+			}
+			inserted = 0 // already folded into events_archive_count
+		}
+
 		if page.Paging.Next == "" || page.Paging.Next == pageURL {
 			break
 		}
 		pageURL = page.Paging.Next
 		if pages >= maxPagesPerSend {
-			// Exiting with an outstanding next page — don't freeze even
-			// if we're past the window; the next beat continues paging.
+			// Exiting with an outstanding next page — this scheduled pull
+			// hasn't caught up. Don't bump the burst counter; the next
+			// beat continues paging from the checkpointed watermark.
 			cappedWithMorePages = true
 		}
 	}
 
-	// Watermark advance: to lastEventTs when we processed anything,
-	// otherwise hold at beginMs-1 (the through-point already covered) so
-	// an empty window doesn't skip the lower bound forward past unseen
-	// events.
+	// While still draining a backlog (capped with more pages), the
+	// per-page checkpoint already persisted forward progress and we
+	// deliberately do NOT advance the burst schedule. Only when this
+	// scheduled pull has caught up do we bump events_pulls_count and (if
+	// past the window) freeze the send.
+	if cappedWithMorePages {
+		return inserted, pages, false, nil
+	}
+
 	newThroughMs := beginMs - 1
 	if lastEventTs > 0 {
 		newThroughMs = lastEventTs
 	}
-
-	frozen = !cappedWithMorePages && nowMs >= snd.CreatedAtMs+ArchiveMaxAgeMS
-
+	frozen = nowMs >= snd.CreatedAtMs+ArchiveMaxAgeMS
 	if progressErr := m.store.RecordEventPullProgress(ctx, snd.SendID, store.EventPullProgress{
 		LastPulledAtMs:      nowMs,
 		LastPulledThroughMs: newThroughMs,

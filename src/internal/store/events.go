@@ -180,6 +180,34 @@ type EventPullProgress struct {
 	Freeze              bool
 }
 
+// CheckpointEventPullThrough advances only the watermark for a multi-beat
+// pull that hasn't caught up yet. Unlike RecordEventPullProgress it does
+// NOT bump events_pulls_count (which tracks scheduled burst beats, not
+// loop iterations) and never freezes — it durably checkpoints forward
+// progress so a pull interrupted mid-backlog resumes after the last
+// fully-processed page instead of restarting.
+//
+// Deliberately leaves events_last_pulled_at_ms untouched: the due-set is
+// ordered by that column ASC, so advancing it mid-drain would push a
+// half-finished large send to the back of the queue behind never-pulled
+// sends, starving it. It stays put until the catch-up
+// RecordEventPullProgress stamps it.
+func (s *Store) CheckpointEventPullThrough(ctx context.Context, sendID string, args EventPullProgress) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE sends SET
+		  events_last_pulled_through_ms = ?,
+		  events_archive_count          = events_archive_count + ?,
+		  events_last_pull_error        = NULL,
+		  updated_at                    = ?
+		WHERE id = ?`,
+		args.LastPulledThroughMs,
+		args.Inserted,
+		nowISO(),
+		sendID,
+	)
+	return err
+}
+
 // RecordEventPullError records a failure from a Mailgun pull. We don't
 // bump events_pulls_count and don't advance the watermark — the next beat
 // will retry the same window.

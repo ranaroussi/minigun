@@ -210,13 +210,13 @@ export async function lookupContactIDByEmail(
 // Counters increment per call; the incremental watermark (each pull
 // begins strictly after the previous pull's highest event timestamp)
 // ensures each event is applied exactly once.
-export async function applyEventToEngagement(
+export function engagementStmt(
   db: D1Database,
   contactID: string,
   listID: string,
   eventType: string,
   eventTsMs: number,
-): Promise<void> {
+): D1PreparedStatement | null {
   const now = nowISO();
   switch (eventType) {
     case 'delivered':
@@ -225,7 +225,7 @@ export async function applyEventToEngagement(
       // the contact's last engagement. Otherwise a late `delivered` for
       // an already-opened message would falsely inflate dormancy and
       // bias prune-by-count toward false positives.
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_engagement
              (contact_id, list_id, last_delivered_at_ms,
@@ -241,11 +241,9 @@ export async function applyEventToEngagement(
              END,
              updated_at                     = excluded.updated_at`,
         )
-        .bind(contactID, listID, eventTsMs, now)
-        .run();
-      return;
+        .bind(contactID, listID, eventTsMs, now);
     case 'opened':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_engagement
              (contact_id, list_id, last_open_at_ms, last_engagement_at_ms,
@@ -258,11 +256,9 @@ export async function applyEventToEngagement(
              messages_since_last_engagement = 0,
              updated_at                     = excluded.updated_at`,
         )
-        .bind(contactID, listID, eventTsMs, eventTsMs, now)
-        .run();
-      return;
+        .bind(contactID, listID, eventTsMs, eventTsMs, now);
     case 'clicked':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_engagement
              (contact_id, list_id, last_click_at_ms, last_engagement_at_ms,
@@ -275,12 +271,21 @@ export async function applyEventToEngagement(
              messages_since_last_engagement = 0,
              updated_at                     = excluded.updated_at`,
         )
-        .bind(contactID, listID, eventTsMs, eventTsMs, now)
-        .run();
-      return;
+        .bind(contactID, listID, eventTsMs, eventTsMs, now);
     default:
-      return;
+      return null;
   }
+}
+
+export async function applyEventToEngagement(
+  db: D1Database,
+  contactID: string,
+  listID: string,
+  eventType: string,
+  eventTsMs: number,
+): Promise<void> {
+  const stmt = engagementStmt(db, contactID, listID, eventType, eventTsMs);
+  if (stmt) await stmt.run();
 }
 
 // Apply one event to the per-(send, contact) detail row in
@@ -291,7 +296,7 @@ export async function applyEventToEngagement(
 // Counters increment per call; the incremental watermark ensures each
 // event is applied exactly once. Timestamp fields use MIN/MAX so
 // out-of-order arrival within a single pull converges.
-export async function applyEventToMessageEngagement(
+export function messageEngagementStmt(
   db: D1Database,
   sendID: string,
   contactID: string,
@@ -300,11 +305,11 @@ export async function applyEventToMessageEngagement(
   eventTsSec: number,
   severity: string | null,
   reason: string | null,
-): Promise<void> {
+): D1PreparedStatement | null {
   const now = Math.floor(Date.now() / 1000);
   switch (eventType) {
     case 'accepted':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, sent_at, updated_at)
            VALUES (?, ?, ?, ?, ?)
@@ -312,11 +317,9 @@ export async function applyEventToMessageEngagement(
              sent_at    = MIN(COALESCE(sent_at, excluded.sent_at), excluded.sent_at),
              updated_at = excluded.updated_at`,
         )
-        .bind(sendID, contactID, listID, eventTsSec, now)
-        .run();
-      return;
+        .bind(sendID, contactID, listID, eventTsSec, now);
     case 'delivered':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, delivered_at, updated_at)
            VALUES (?, ?, ?, ?, ?)
@@ -324,11 +327,9 @@ export async function applyEventToMessageEngagement(
              delivered_at = MIN(COALESCE(delivered_at, excluded.delivered_at), excluded.delivered_at),
              updated_at   = excluded.updated_at`,
         )
-        .bind(sendID, contactID, listID, eventTsSec, now)
-        .run();
-      return;
+        .bind(sendID, contactID, listID, eventTsSec, now);
     case 'opened':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, first_open_at, last_open_at, total_opens, updated_at)
            VALUES (?, ?, ?, ?, ?, 1, ?)
@@ -338,11 +339,9 @@ export async function applyEventToMessageEngagement(
              total_opens   = total_opens + 1,
              updated_at    = excluded.updated_at`,
         )
-        .bind(sendID, contactID, listID, eventTsSec, eventTsSec, now)
-        .run();
-      return;
+        .bind(sendID, contactID, listID, eventTsSec, eventTsSec, now);
     case 'clicked':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, first_click_at, last_click_at, total_clicks, updated_at)
            VALUES (?, ?, ?, ?, ?, 1, ?)
@@ -352,12 +351,10 @@ export async function applyEventToMessageEngagement(
              total_clicks   = total_clicks + 1,
              updated_at     = excluded.updated_at`,
         )
-        .bind(sendID, contactID, listID, eventTsSec, eventTsSec, now)
-        .run();
-      return;
+        .bind(sendID, contactID, listID, eventTsSec, eventTsSec, now);
     case 'failed':
     case 'rejected':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, failed, failed_at, failure_severity, failure_reason, updated_at)
            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
@@ -368,11 +365,9 @@ export async function applyEventToMessageEngagement(
              failure_reason   = excluded.failure_reason,
              updated_at       = excluded.updated_at`,
         )
-        .bind(sendID, contactID, listID, eventTsSec, severity, reason, now)
-        .run();
-      return;
+        .bind(sendID, contactID, listID, eventTsSec, severity, reason, now);
     case 'complained':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, complained_at, updated_at)
            VALUES (?, ?, ?, ?, ?)
@@ -380,11 +375,9 @@ export async function applyEventToMessageEngagement(
              complained_at = MAX(COALESCE(complained_at, 0), excluded.complained_at),
              updated_at    = excluded.updated_at`,
         )
-        .bind(sendID, contactID, listID, eventTsSec, now)
-        .run();
-      return;
+        .bind(sendID, contactID, listID, eventTsSec, now);
     case 'unsubscribed':
-      await db
+      return db
         .prepare(
           `INSERT INTO contact_message_engagement (send_id, contact_id, list_id, unsubscribed_at, updated_at)
            VALUES (?, ?, ?, ?, ?)
@@ -392,12 +385,24 @@ export async function applyEventToMessageEngagement(
              unsubscribed_at = MAX(COALESCE(unsubscribed_at, 0), excluded.unsubscribed_at),
              updated_at      = excluded.updated_at`,
         )
-        .bind(sendID, contactID, listID, eventTsSec, now)
-        .run();
-      return;
+        .bind(sendID, contactID, listID, eventTsSec, now);
     default:
-      return;
+      return null;
   }
+}
+
+export async function applyEventToMessageEngagement(
+  db: D1Database,
+  sendID: string,
+  contactID: string,
+  listID: string | null,
+  eventType: string,
+  eventTsSec: number,
+  severity: string | null,
+  reason: string | null,
+): Promise<void> {
+  const stmt = messageEngagementStmt(db, sendID, contactID, listID, eventType, eventTsSec, severity, reason);
+  if (stmt) await stmt.run();
 }
 
 // canonicalizeClickURL normalizes a clicked link so the per-URL rollup
@@ -424,18 +429,18 @@ export function canonicalizeClickURL(raw: string): string {
 // (contact_message_clicks). url is canonicalized here; an empty/blank url
 // is a no-op (cme.total_clicks still counts it). eventTsSec is epoch
 // SECONDS. Same accepted crash/retry counter drift as the other Apply*.
-export async function applyClickToURL(
+export function clickStmt(
   db: D1Database,
   sendID: string,
   contactID: string,
   listID: string | null,
   rawURL: string,
   eventTsSec: number,
-): Promise<void> {
+): D1PreparedStatement | null {
   const clickURL = canonicalizeClickURL(rawURL);
-  if (!clickURL) return;
+  if (!clickURL) return null;
   const now = Math.floor(Date.now() / 1000);
-  await db
+  return db
     .prepare(
       `INSERT INTO contact_message_clicks
          (send_id, contact_id, list_id, url, first_click_at, last_click_at, total_clicks, updated_at)
@@ -447,7 +452,71 @@ export async function applyClickToURL(
          list_id        = COALESCE(list_id, excluded.list_id),
          updated_at     = excluded.updated_at`,
     )
-    .bind(sendID, contactID, listID, clickURL, eventTsSec, eventTsSec, now)
+    .bind(sendID, contactID, listID, clickURL, eventTsSec, eventTsSec, now);
+}
+
+export async function applyClickToURL(
+  db: D1Database,
+  sendID: string,
+  contactID: string,
+  listID: string | null,
+  rawURL: string,
+  eventTsSec: number,
+): Promise<void> {
+  const stmt = clickStmt(db, sendID, contactID, listID, rawURL, eventTsSec);
+  if (stmt) await stmt.run();
+}
+
+// Resolve many recipient emails to contact_ids in one query (chunked to
+// stay under SQLite's bound-variable cap). Used by the batched pull loop
+// so a page of events triggers one read instead of one lookup per event.
+export async function lookupContactIDsByEmails(
+  db: D1Database,
+  emails: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const unique = [...new Set(emails.map((e) => e.toLowerCase()))];
+  // D1 caps bound parameters at 100 per query, so chunk the IN-list well
+  // under that.
+  const CHUNK = 90;
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    const slice = unique.slice(i, i + CHUNK);
+    const placeholders = slice.map(() => '?').join(',');
+    const { results } = await db
+      .prepare(`SELECT id, email FROM contacts WHERE email IN (${placeholders})`)
+      .bind(...slice)
+      .all<{ id: string; email: string }>();
+    for (const r of results ?? []) out.set(r.email.toLowerCase(), r.id);
+  }
+  return out;
+}
+
+// Advance only the watermark for a multi-beat pull that hasn't caught up
+// yet. Unlike recordEventPullProgress this does NOT bump events_pulls_count
+// (which tracks scheduled burst beats, not cron ticks) and never freezes —
+// it just durably checkpoints forward progress so a CPU-killed beat
+// resumes after the last fully-processed page instead of restarting.
+//
+// Deliberately leaves events_last_pulled_at_ms untouched: the due-set is
+// ordered by that column ASC, so advancing it mid-drain would push a
+// half-finished large send to the back of the queue behind never-pulled
+// sends, starving it. It stays put (and thus keeps getting picked each
+// tick) until the catch-up recordEventPullProgress stamps it.
+export async function checkpointEventPullThrough(
+  db: D1Database,
+  sendID: string,
+  args: { last_pulled_through_ms: number; inserted: number },
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE sends SET
+         events_last_pulled_through_ms = ?,
+         events_archive_count          = events_archive_count + ?,
+         events_last_pull_error        = NULL,
+         updated_at                    = ?
+       WHERE id = ?`,
+    )
+    .bind(args.last_pulled_through_ms, args.inserted, nowISO(), sendID)
     .run();
 }
 
