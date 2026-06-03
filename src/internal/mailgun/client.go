@@ -320,7 +320,10 @@ func (c *Client) PerSendMetrics(ctx context.Context, sendID string, sendCreatedA
 		Start:      start,
 		End:        end,
 		Resolution: "day",
-		Metrics:    []string{"accepted_count", "delivered_count", "failed_count", "opened_count", "clicked_count", "complained_count"},
+		// permanent_failed_count = unique hard bounces (addresses actually
+		// removed). failed_count also includes temporary_failed_count — every
+		// soft-bounce retry event — which wildly overcounts removals.
+		Metrics: []string{"accepted_count", "delivered_count", "permanent_failed_count", "opened_count", "clicked_count", "complained_count"},
 		Tag:        sendID,
 	}
 	resp, err := c.Metrics(ctx, mr)
@@ -334,7 +337,7 @@ func (c *Client) PerSendMetrics(ctx context.Context, sendID string, sendCreatedA
 			totals.Delivered += item.Metrics["delivered_count"]
 			totals.Opened += item.Metrics["opened_count"]
 			totals.Clicked += item.Metrics["clicked_count"]
-			totals.Failed += item.Metrics["failed_count"]
+			totals.Failed += item.Metrics["permanent_failed_count"]
 			totals.Complained += item.Metrics["complained_count"]
 		}
 	}
