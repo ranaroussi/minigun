@@ -248,8 +248,11 @@ func (c *Client) Metrics(ctx context.Context, mr MetricsRequest) (*MetricsRespon
 	}
 
 	body := metricsBody{
-		Start:      mr.Start.UTC().Format(time.RFC3339),
-		End:        mr.End.UTC().Format(time.RFC3339),
+		// Mailgun's analytics-metrics endpoint rejects ISO-8601 (RFC3339); it
+		// wants an RFC 2822 / RFC 1123 date (e.g. "Mon, 02 Jun 2026 09:58:03
+		// GMT"), which is what time.RFC1123 produces in UTC.
+		Start:      mr.Start.UTC().Format(time.RFC1123),
+		End:        mr.End.UTC().Format(time.RFC1123),
 		Resolution: defaultStr(mr.Resolution, "day"),
 		Metrics:    mr.Metrics,
 	}

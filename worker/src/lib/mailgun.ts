@@ -239,8 +239,11 @@ export async function metrics(
   tag?: string,
 ): Promise<MetricsResponse> {
   const body: Record<string, unknown> = {
-    start: start.toISOString(),
-    end: end.toISOString(),
+    // Mailgun's analytics-metrics endpoint rejects ISO-8601; it wants an
+    // RFC 2822 / RFC 1123 date (e.g. "Mon, 02 Jun 2026 09:58:03 GMT"), which
+    // is exactly what Date.toUTCString() produces.
+    start: start.toUTCString(),
+    end: end.toUTCString(),
     resolution: 'day',
     metrics: metricsList,
   };
