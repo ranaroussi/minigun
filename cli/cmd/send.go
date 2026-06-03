@@ -464,7 +464,7 @@ contact's lifetime engagement across a whole list, use
 Pagination is a keyset cursor over contact_id. Pass --cursor with the
 value from next_cursor, or --all to follow pagination automatically.
 
-Requires EVENTS_ARCHIVE_ENABLED on the server side.`,
+Requires ENGAGEMENT_STATS_ENABLED on the server side.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sendID := args[0]
@@ -540,7 +540,7 @@ canonical (scheme+host lowercased, query string and fragment stripped).
 Pagination is a keyset cursor over (contact_id, url). Pass --cursor with
 the value from next_cursor, or --all to follow pagination automatically.
 
-Requires EVENTS_ARCHIVE_ENABLED on the server side.`,
+Requires ENGAGEMENT_STATS_ENABLED on the server side.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sendID := args[0]

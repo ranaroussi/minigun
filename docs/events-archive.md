@@ -1,8 +1,8 @@
 # Per-send event archive & engagement rollups
 
-Backing the [engagement-based prune](./list-hygiene.md#proactive-hygiene--engagement-based-prune) is a local rollup of Mailgun events. Once you set `EVENTS_ARCHIVE_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule (`+0`, `+1h`, `+6h`, `+24h` after a send, then daily for 30 days). Each pull begins at the highest event timestamp the previous pull saw (the send's `created_at` on the first pull) and folds every event straight into two bounded engagement tiers — **no raw per-event rows are stored**.
+Backing the [engagement-based prune](./list-hygiene.md#proactive-hygiene--engagement-based-prune) is a local rollup of Mailgun events. Once you set `ENGAGEMENT_STATS_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule (`+0`, `+1h`, `+6h`, `+24h` after a send, then daily for 30 days). Each pull begins at the highest event timestamp the previous pull saw (the send's `created_at` on the first pull) and folds every event straight into two bounded engagement tiers — **no raw per-event rows are stored**.
 
-The archive is **opt-in.** Default-off `EVENTS_ARCHIVE_ENABLED` means the schema lands dormant; flip the flag whenever you're ready to start collecting.
+The archive is **opt-in.** Default-off `ENGAGEMENT_STATS_ENABLED` means the schema lands dormant; flip the flag whenever you're ready to start collecting.
 
 ## The two rollup tiers
 

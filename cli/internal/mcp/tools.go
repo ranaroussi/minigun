@@ -375,7 +375,7 @@ type listSendRecipientsInput struct {
 func addListSendRecipients(s *mcpsdk.Server, c *client.Client) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "list_send_recipients",
-		Description: "Returns the per-recipient message engagement rollup for a send (one row per contact: sent/delivered timestamps, first/last open + click with counts, failure/complaint/unsubscribe state), keyset-paginated by contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server. Use for 'how did each recipient engage with this send' analysis.",
+		Description: "Returns the per-recipient message engagement rollup for a send (one row per contact: sent/delivered timestamps, first/last open + click with counts, failure/complaint/unsubscribe state), keyset-paginated by contact_id. Requires ENGAGEMENT_STATS_ENABLED on the server. Use for 'how did each recipient engage with this send' analysis.",
 		Annotations: &mcpsdk.ToolAnnotations{
 			ReadOnlyHint: true,
 			Title:        "List send recipients",
@@ -411,7 +411,7 @@ type listSendClicksInput struct {
 func addListSendClicks(s *mcpsdk.Server, c *client.Client) {
 	mcpsdk.AddTool(s, &mcpsdk.Tool{
 		Name:        "list_send_clicks",
-		Description: "Returns the per-URL click rollup for a send (one row per contact + clicked link: canonical URL, first/last click, click count), keyset-paginated over (contact_id, url). Requires EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by what they clicked.",
+		Description: "Returns the per-URL click rollup for a send (one row per contact + clicked link: canonical URL, first/last click, click count), keyset-paginated over (contact_id, url). Requires ENGAGEMENT_STATS_ENABLED on the server. Use to segment an audience by what they clicked.",
 		Annotations: &mcpsdk.ToolAnnotations{
 			ReadOnlyHint: true,
 			Title:        "List send clicks",

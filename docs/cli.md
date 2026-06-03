@@ -270,7 +270,7 @@ minigun send resume s_8Kx29aPqz --force
 
 ### `minigun send recipients <id>`
 
-Per-recipient message engagement rollup for a send — one row per contact summarizing how that recipient interacted with the message: `sent_at`, `delivered_at`, first/last open + click with counts, and failure/complaint/unsubscribe state (timestamps are epoch seconds). Requires `EVENTS_ARCHIVE_ENABLED=true` on the server.
+Per-recipient message engagement rollup for a send — one row per contact summarizing how that recipient interacted with the message: `sent_at`, `delivered_at`, first/last open + click with counts, and failure/complaint/unsubscribe state (timestamps are epoch seconds). Requires `ENGAGEMENT_STATS_ENABLED=true` on the server.
 
 ```bash
 # First page (keyset-paginated by contact_id, default limit 100, max 500):
@@ -296,7 +296,7 @@ minigun send clicks s_8Kx29aPqz
 minigun send clicks s_8Kx29aPqz --all > clicks.json
 ```
 
-URLs are stored **canonical**: trimmed, scheme + host lowercased (path case preserved), query string and fragment stripped — so the same destination aggregates regardless of UTM/tracking params or per-recipient tokens. Same coverage caveat as `send recipients`: only clicks by known contacts are recorded. Requires `EVENTS_ARCHIVE_ENABLED=true`.
+URLs are stored **canonical**: trimmed, scheme + host lowercased (path case preserved), query string and fragment stripped — so the same destination aggregates regardless of UTM/tracking params or per-recipient tokens. Same coverage caveat as `send recipients`: only clicks by known contacts are recorded. Requires `ENGAGEMENT_STATS_ENABLED=true`.
 
 ### `minigun contact engagement <idOrEmail>`
 
@@ -311,7 +311,7 @@ minigun contact engagement alice@example.com --list newsletter
 minigun contact engagement c_PP5AA3MBXS    --list l_8Kx29aPqz
 ```
 
-Requires `EVENTS_ARCHIVE_ENABLED=true`. Returns an empty `items` array for contacts who haven't been delivered to yet — rows are sparse on purpose, so a never-emailed contact isn't a false positive for any prune criterion.
+Requires `ENGAGEMENT_STATS_ENABLED=true`. Returns an empty `items` array for contacts who haven't been delivered to yet — rows are sparse on purpose, so a never-emailed contact isn't a false positive for any prune criterion.
 
 ### `minigun list prune <list>`
 
@@ -402,9 +402,9 @@ The `env` block is optional if your MCP client inherits the shell environment. m
 | `cancel_send` | `POST /send/{id}/cancel` | Destructive — unschedule a `scheduled`/`queued` send |
 | `get_send_status` | `GET /send/{id}` | ReadOnly |
 | `get_send_stats` | `GET /send/{id}/stats` | ReadOnly |
-| `list_send_recipients` | `GET /send/{id}/recipients` | ReadOnly — per-recipient message engagement; requires `EVENTS_ARCHIVE_ENABLED=true` |
-| `list_send_clicks` | `GET /send/{id}/clicks` | ReadOnly — per-URL click rollup for segmentation; requires `EVENTS_ARCHIVE_ENABLED=true` |
-| `get_contact_engagement` | `GET /contacts/{idOrEmail}/engagement` | ReadOnly — requires `EVENTS_ARCHIVE_ENABLED=true` |
+| `list_send_recipients` | `GET /send/{id}/recipients` | ReadOnly — per-recipient message engagement; requires `ENGAGEMENT_STATS_ENABLED=true` |
+| `list_send_clicks` | `GET /send/{id}/clicks` | ReadOnly — per-URL click rollup for segmentation; requires `ENGAGEMENT_STATS_ENABLED=true` |
+| `get_contact_engagement` | `GET /contacts/{idOrEmail}/engagement` | ReadOnly — requires `ENGAGEMENT_STATS_ENABLED=true` |
 | `prune_list` | `POST /lists/{list}/prune` | Destructive — `dry_run` defaults to `true` |
 
 **Resources** — enumeration as MCP resources. Paginated resources accept `?cursor=` and `?limit=` query parameters in the URI.

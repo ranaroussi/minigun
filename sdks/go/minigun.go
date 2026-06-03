@@ -409,7 +409,7 @@ type ListSendRecipientsArgs struct {
 // ListSendRecipients returns one page of per-recipient message
 // engagement for a send (one row per contact: sent/delivered timestamps,
 // first/last open + click with counts, failure/complaint/unsubscribe
-// state), keyset-paginated by contact_id. Requires EVENTS_ARCHIVE_ENABLED
+// state), keyset-paginated by contact_id. Requires ENGAGEMENT_STATS_ENABLED
 // on the server. Response shape is { items: [...], next_cursor?: string }.
 func (c *Client) ListSendRecipients(ctx context.Context, a ListSendRecipientsArgs) (map[string]any, error) {
 	if a.SendID == "" {
@@ -439,7 +439,7 @@ type ListSendClicksArgs struct {
 // ListSendClicks returns one page of the per-URL click rollup for a send
 // (one row per contact + clicked link: canonical url, first/last click,
 // click count), keyset-paginated over (contact_id, url). Requires
-// EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by
+// ENGAGEMENT_STATS_ENABLED on the server. Use to segment an audience by
 // what they clicked. Response shape is { items: [...], next_cursor?: string }.
 func (c *Client) ListSendClicks(ctx context.Context, a ListSendClicksArgs) (map[string]any, error) {
 	if a.SendID == "" {

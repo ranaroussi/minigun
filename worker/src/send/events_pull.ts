@@ -1,4 +1,4 @@
-import { Env, eventsArchiveEnabled } from '../env';
+import { Env, engagementStatsEnabled } from '../env';
 import { fetchEvents, MailgunAPIError } from '../lib/mailgun';
 import {
   DueEventPullRow,
@@ -74,9 +74,9 @@ export function nextDueAt(row: {
 // ---------------------------------------------------------------------------
 
 // Cron entrypoint. Called from the worker's scheduled handler. No-ops
-// when EVENTS_ARCHIVE_ENABLED is unset (Phase 2+ feature flag).
+// when ENGAGEMENT_STATS_ENABLED is unset (engagement retrieval feature flag).
 export async function pullDueSendEvents(env: Env, limit = 20): Promise<void> {
-  if (!eventsArchiveEnabled(env)) return;
+  if (!engagementStatsEnabled(env)) return;
   const now = Date.now();
   let candidates: DueEventPullRow[];
   try {

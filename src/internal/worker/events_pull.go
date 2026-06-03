@@ -68,7 +68,7 @@ func NextEventPullDueAt(row store.DueEventPullRow) (dueAtMs int64, frozen bool) 
 
 // RunEventsArchiveScheduler wakes every interval, finds sends with events
 // due to be pulled, and ingests their events from Mailgun. Blocks until
-// ctx is cancelled. No-ops when cfg.EventsArchiveEnabled is false — the
+// ctx is cancelled. No-ops when cfg.EngagementStatsEnabled is false — the
 // caller (cmd/serve.go) still spawns the goroutine so flipping the env
 // var doesn't require a restart of the rest of the manager.
 func (m *Manager) RunEventsArchiveScheduler(ctx context.Context, interval time.Duration) {
@@ -89,10 +89,10 @@ func (m *Manager) RunEventsArchiveScheduler(ctx context.Context, interval time.D
 }
 
 // pullEventsOnce is the cron tick. Short-circuits when the feature flag
-// is off so an operator can ship dormant in Phase 1, leave the scheduler
-// running, and activate by setting EVENTS_ARCHIVE_ENABLED=true.
+// is off so an operator can leave the scheduler running and activate
+// engagement retrieval by setting ENGAGEMENT_STATS_ENABLED=true.
 func (m *Manager) pullEventsOnce(ctx context.Context) {
-	if !m.cfg.EventsArchiveEnabled {
+	if !m.cfg.EngagementStatsEnabled {
 		return
 	}
 	const batchSize = 20

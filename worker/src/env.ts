@@ -21,12 +21,14 @@ export type Env = {
   MINIGUN_TURNSTILE_SECRET_KEY?: string;
   MAILGUN_WEBHOOK_SIGNING_KEY?: string;
 
-  // Feature flag for the Mailgun events archive (Phase 2+ of the rollout).
-  // When undefined or anything other than the literal string "true", the
-  // events-pull cron and contact_engagement maintenance remain dormant —
-  // Phase 1 only ships the schema and send-path tagging, so the data starts
-  // accumulating on Mailgun's side ahead of any local archive activity.
-  // Set to "true" to activate ingestion once the consumer code lands.
+  // Feature flag for engagement-stats retrieval: the events-pull cron that
+  // fetches Mailgun events into the per-recipient engagement rollups
+  // (contact_message_engagement / contact_message_clicks / contact_engagement).
+  // When undefined or anything other than "true", the pull stays dormant.
+  // This gates RETRIEVAL only; acting on the data (pruning) is the separate
+  // LIST_HYGIENE_AUTO_PRUNE_ENABLED flag.
+  ENGAGEMENT_STATS_ENABLED?: string;
+  // Deprecated alias for ENGAGEMENT_STATS_ENABLED, kept for backward compat.
   EVENTS_ARCHIVE_ENABLED?: string;
 
   // Feature flag for the auto-prune cron (Phase 4). When "true", every
@@ -40,8 +42,10 @@ export type Env = {
   LIST_HYGIENE_AUTO_PRUNE_NO_DELIVERY_DAYS?: string;
 };
 
-export function eventsArchiveEnabled(env: Env): boolean {
-  return (env.EVENTS_ARCHIVE_ENABLED ?? '').toLowerCase() === 'true';
+export function engagementStatsEnabled(env: Env): boolean {
+  // Prefer the current name; fall back to the deprecated EVENTS_ARCHIVE_ENABLED.
+  const v = env.ENGAGEMENT_STATS_ENABLED ?? env.EVENTS_ARCHIVE_ENABLED ?? '';
+  return v.toLowerCase() === 'true';
 }
 
 export function autoPruneEnabled(env: Env): boolean {

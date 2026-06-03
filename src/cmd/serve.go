@@ -66,9 +66,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// 'scheduled') once their send_at arrives. Tick rate bounds scheduling
 	// granularity; 30s is well within email tolerances.
 	go wm.RunScheduledSendDispatcher(ctx, 30*time.Second)
-	// Events archive scheduler — internally no-ops when
-	// cfg.EventsArchiveEnabled is false. We spawn the goroutine
-	// unconditionally so flipping EVENTS_ARCHIVE_ENABLED=true at runtime
+	// Engagement-stats retrieval scheduler — internally no-ops when
+	// cfg.EngagementStatsEnabled is false. We spawn the goroutine
+	// unconditionally so flipping ENGAGEMENT_STATS_ENABLED=true at runtime
 	// only requires a config reload, not a process restart.
 	go wm.RunEventsArchiveScheduler(ctx, 15*time.Minute)
 	// Auto-prune scheduler — internally no-ops when

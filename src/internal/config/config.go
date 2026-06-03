@@ -29,13 +29,14 @@ type Config struct {
 	// requests (fail-closed) so we never trust an unsigned payload.
 	MailgunWebhookSigningKey string
 
-	// Feature flag for the Mailgun events archive (Phase 2+ of the
-	// rollout). When false, the events-pull cron and contact_engagement
-	// maintenance remain dormant — Phase 1 only ships the schema and
-	// send-path tagging, so the data starts accumulating on Mailgun's
-	// side ahead of any local archive activity. Flip to true once the
-	// consumer code lands.
-	EventsArchiveEnabled bool
+	// Feature flag for engagement-stats retrieval: the events-pull cron
+	// that fetches Mailgun events into the per-recipient engagement
+	// rollups (contact_message_engagement / contact_message_clicks /
+	// contact_engagement). When false the pull stays dormant. This gates
+	// RETRIEVAL only; acting on the data (pruning) is the separate
+	// ListHygieneAutoPruneEnabled flag. Sourced from ENGAGEMENT_STATS_ENABLED
+	// (with EVENTS_ARCHIVE_ENABLED as a deprecated alias).
+	EngagementStatsEnabled bool
 
 	// Feature flag for the optional auto-prune cron (Phase 4). When
 	// true, a daily scheduler runs the prune executor against every list
@@ -66,7 +67,7 @@ func FromEnv() (*Config, error) {
 		TurnstileSecretKey: os.Getenv("MINIGUN_TURNSTILE_SECRET_KEY"),
 		APIToken:           os.Getenv("MINIGUN_API_TOKEN"),
 		MailgunWebhookSigningKey: os.Getenv("MAILGUN_WEBHOOK_SIGNING_KEY"),
-		EventsArchiveEnabled:     strings.EqualFold(os.Getenv("EVENTS_ARCHIVE_ENABLED"), "true"),
+		EngagementStatsEnabled:   strings.EqualFold(envOr("ENGAGEMENT_STATS_ENABLED", os.Getenv("EVENTS_ARCHIVE_ENABLED")), "true"),
 		ListHygieneAutoPruneEnabled: strings.EqualFold(os.Getenv("LIST_HYGIENE_AUTO_PRUNE_ENABLED"), "true"),
 		// Conservative defaults: 20 wasted deliveries OR 180 days no engagement.
 		// Operators who want different thresholds set the corresponding env var.
