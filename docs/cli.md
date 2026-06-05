@@ -256,7 +256,12 @@ Aggregate stats (Mailgun Metrics API + local unsubscribe count). The server pers
 
 ```bash
 minigun send stats s_8Kx29aPqz
+
+# bypass the cached snapshot and pull the latest numbers from Mailgun now:
+minigun send stats s_8Kx29aPqz --force
 ```
+
+`--force` (server: `?force=1`) skips the cached row and the polling schedule, fetches fresh numbers from Mailgun immediately, and — for completed sends — persists them (advancing the same schedule), so the refreshed snapshot sticks. The response carries `"source": "mailgun_forced"`. Useful right after a send, when Mailgun's metrics are still catching up to the final delivered/opened counts.
 
 ### `minigun send resume <id>`
 

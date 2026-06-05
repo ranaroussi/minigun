@@ -13,6 +13,7 @@ import (
 	"github.com/ranaroussi/minigun/internal/models"
 	"github.com/ranaroussi/minigun/internal/render"
 	"github.com/ranaroussi/minigun/internal/store"
+	"github.com/ranaroussi/minigun/internal/worker"
 )
 
 type bulkSendReq struct {
@@ -470,6 +471,53 @@ func (s *Server) handleSendStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Force path: bypass the cache and the next_fetch_at schedule, pull
+	// fresh numbers from Mailgun right now. When the send has completed we
+	// also persist them (advancing the same schedule the cron uses) so the
+	// refreshed snapshot sticks; while still running we just return live.
+	if isTruthyParam(r.URL.Query().Get("force")) {
+		totals, mgErr := s.mailgun.PerSendMetrics(r.Context(), snd.ID, snd.CreatedAt)
+		if mgErr != nil {
+			writeError(w, http.StatusBadGateway, "mailgun fetch failed: "+mgErr.Error())
+			return
+		}
+		if snd.CompletedAt != nil {
+			nextFetch, isFinal := worker.NextStatsFetch(*snd.CompletedAt, time.Now())
+			if err := s.store.ApplyMailgunStats(r.Context(), snd.ID, store.SendStatsUpdate{
+				Sent:       totals.Sent,
+				Delivered:  totals.Delivered,
+				Opened:     totals.Opened,
+				Clicked:    totals.Clicked,
+				Failed:     totals.Failed,
+				Complained: totals.Complained,
+				NextFetch:  &nextFetch,
+				IsFinal:    isFinal,
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		unsub := uint64(0)
+		if refreshed, err := s.store.GetSendStats(r.Context(), id); err == nil && refreshed != nil {
+			unsub = refreshed.Unsubscribed
+		} else if n, err := s.store.CountUnsubscribesForSend(r.Context(), id); err == nil {
+			unsub = uint64(n)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":           snd.ID,
+			"sent":         totals.Sent,
+			"delivered":    totals.Delivered,
+			"opened":       totals.Opened,
+			"clicked":      totals.Clicked,
+			"failed":       totals.Failed,
+			"complained":   totals.Complained,
+			"unsubscribed": unsub,
+			"is_final":     false,
+			"source":       "mailgun_forced",
+		})
+		return
+	}
+
 	// Stable path: row exists and has at least one Mailgun fetch (or is_final).
 	if st != nil && (st.IsFinal || st.LastFetchedAt != nil) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -526,6 +574,14 @@ func emptyToNil(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func isTruthyParam(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // parseSendAt parses an optional RFC3339 schedule time. Empty means "send

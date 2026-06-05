@@ -426,12 +426,18 @@ func newProgressCmd() *cobra.Command {
 var sendProgressCmd = newProgressCmd()
 var progressTopCmd = newProgressCmd()
 
+var statsForce bool
+
 var sendStatsCmd = &cobra.Command{
 	Use:   "stats <send_id>",
 	Short: "Show send aggregate stats (delivered, opened, etc.)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := newClient().Get(fmt.Sprintf("/send/%s/stats", args[0]))
+		path := fmt.Sprintf("/send/%s/stats", args[0])
+		if statsForce {
+			path += "?force=1"
+		}
+		resp, err := newClient().Get(path)
 		if err != nil {
 			return err
 		}
@@ -683,6 +689,8 @@ func init() {
 	// frontmatter instead. The RunE validates after the frontmatter merge.
 
 	sendResumeCmd.Flags().BoolVar(&resumeForce, "force", false, "Resume even when in-flight batches are present (may cause duplicate sends)")
+
+	sendStatsCmd.Flags().BoolVar(&statsForce, "force", false, "Bypass the cache and fetch the latest numbers from Mailgun now (also refreshes the stored snapshot)")
 
 	sendStatusCmd.Flags().BoolVarP(&statusWatch, "watch", "w", false, "Poll status until the send reaches a terminal state")
 	sendStatusCmd.Flags().DurationVar(&statusInterval, "interval", 2*time.Second, "Polling interval when --watch is set")

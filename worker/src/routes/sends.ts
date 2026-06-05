@@ -15,8 +15,9 @@ import { sendProgress } from '../store/batches';
 import { resolveCompany } from '../store/companies';
 import { upsertContact } from '../store/contacts';
 import { resolveList } from '../store/lists';
+import { nextStatsFetch } from '../send/stats';
 import { cancelScheduledSend, createSend, getSend, listSends } from '../store/sends';
-import { getSendStats } from '../store/stats';
+import { applyMailgunStats, getSendStats } from '../store/stats';
 import {
   countSubscribed,
   maxSubscriptionID,
@@ -28,6 +29,19 @@ import { countUnsubscribesForSend } from '../store/unsubs';
 function emptyToNull(s: string | undefined | null): string | null {
   if (!s || !s.trim()) return null;
   return s;
+}
+
+function isTruthyParam(v: string | undefined | null): boolean {
+  if (!v) return false;
+  switch (v.trim().toLowerCase()) {
+    case '1':
+    case 'true':
+    case 'yes':
+    case 'on':
+      return true;
+    default:
+      return false;
+  }
 }
 
 // Returns an error message when send_at is present but unparseable, else null
@@ -374,7 +388,53 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       throw err;
     }
 
+    // Force path: bypass the cache and the next_fetch_at schedule, pull
+    // fresh numbers from Mailgun right now. When the send has completed we
+    // also persist them (advancing the same schedule the cron uses) so the
+    // refreshed snapshot sticks; while still running we just return live.
+    const force = isTruthyParam(c.req.query('force'));
+
     const st = await getSendStats(c.env.DB, id);
+    if (force) {
+      let totals: PerSendTotals;
+      try {
+        totals = await perSendMetrics(c.env, snd.id, new Date(snd.created_at));
+      } catch (err) {
+        console.warn('mailgun metrics failed (force)', snd.id, err);
+        return c.json({ error: 'mailgun fetch failed' }, 502);
+      }
+      if (snd.completed_at) {
+        const { next, isFinal } = nextStatsFetch(new Date(snd.completed_at), new Date());
+        await applyMailgunStats(c.env.DB, snd.id, {
+          sent: totals.sent,
+          delivered: totals.delivered,
+          opened: totals.opened,
+          clicked: totals.clicked,
+          failed: totals.failed,
+          complained: totals.complained,
+          next_fetch_at: next?.toISOString() ?? null,
+          is_final: isFinal,
+          fetch_error: null,
+        });
+      }
+      const refreshed = await getSendStats(c.env.DB, id);
+      const unsub = refreshed
+        ? refreshed.unsubscribed
+        : await countUnsubscribesForSend(c.env.DB, id);
+      return c.json({
+        id: snd.id,
+        sent: totals.sent,
+        delivered: totals.delivered,
+        opened: totals.opened,
+        clicked: totals.clicked,
+        failed: totals.failed,
+        complained: totals.complained,
+        unsubscribed: unsub,
+        is_final: false,
+        source: 'mailgun_forced',
+      });
+    }
+
     if (st && (st.is_final || st.last_fetched_at)) {
       return c.json({
         id: snd.id,
