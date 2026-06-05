@@ -45,41 +45,70 @@ export type MessageEngagement = {
 // Cron-helper queries
 // ---------------------------------------------------------------------------
 
-// Selects non-frozen, non-test sends with a sending_domain. The
-// burst-vs-daily schedule logic AND the past-the-window freeze decision
-// happen in the worker layer (see nextDueAt in send/events_pull.ts).
-// We deliberately do NOT filter by age — sends past ARCHIVE_MAX_AGE_MS
-// still need one final pull so the worker can set
-// events_archive_complete = 1. Filtering on age here (Phase 2 bug) left
-// aged-out sends un-frozen forever and silently dropped tail events.
+// Selects non-frozen, non-test sends with a sending_domain that are DUE
+// for a pull right now. The due predicate below mirrors nextDueAt() in
+// send/events_pull.ts exactly (the worker re-checks it as a safety net):
 //
-// nowMs/maxAgeMs are accepted for signature compatibility but unused.
+//   - Burst phase (events_pulls_count < 4): due when
+//     created_at + BURST_OFFSETS_MS[count] <= now. Offsets are
+//     [0, +1h, +6h, +24h] = [0, 3600000, 21600000, 86400000] ms.
+//   - Daily phase (count >= 4): due when last_pulled + 24h <= now, OR
+//     when the next daily beat would fall past the archive window
+//     (last_pulled + 24h > created + maxAge) — that send still needs one
+//     final pull to flip events_archive_complete = 1, so it counts as due.
+//
+// Filtering due-ness HERE rather than after a LIMIT is critical: the
+// queue is ordered by events_last_pulled_at_ms ASC, and a large backlog
+// of not-yet-due daily sends (all pulled within the last day) would
+// otherwise occupy the entire LIMIT window every tick and starve a fresh
+// send waiting on its +1h/+6h burst beat (it sorts behind them because
+// it was pulled more recently). We deliberately do NOT exclude sends past
+// the age window — they need that final freeze pull.
+//
+// nowMs is "now"; maxAgeMs is the archive window (ARCHIVE_MAX_AGE_MS).
 export async function listDueEventPulls(
   db: D1Database,
   nowMs: number,
   maxAgeMs: number,
   limit: number,
 ): Promise<DueEventPullRow[]> {
-  void nowMs;
-  void maxAgeMs;
+  const DAILY_MS = 24 * 60 * 60 * 1000;
   const { results } = await db
     .prepare(
-      `SELECT
-         id                            AS send_id,
-         sending_domain                AS from_domain,
-         CAST(strftime('%s', created_at) AS INTEGER) * 1000 AS created_at_ms,
-         events_pulls_count,
-         events_last_pulled_at_ms,
-         events_last_pulled_through_ms
-       FROM sends
-       WHERE events_archive_complete = 0
-         AND test_mode = 0
-         AND status IN ('completed', 'failed', 'cancelled', 'running')
-         AND sending_domain != ''
+      `WITH candidates AS (
+         SELECT
+           id                            AS send_id,
+           sending_domain                AS from_domain,
+           CAST(strftime('%s', created_at) AS INTEGER) * 1000 AS created_at_ms,
+           events_pulls_count,
+           events_last_pulled_at_ms,
+           events_last_pulled_through_ms
+         FROM sends
+         WHERE events_archive_complete = 0
+           AND test_mode = 0
+           AND status IN ('completed', 'failed', 'cancelled', 'running')
+           AND sending_domain != ''
+       )
+       SELECT * FROM candidates
+       WHERE (
+           events_pulls_count < 4
+           AND created_at_ms + (CASE events_pulls_count
+                 WHEN 0 THEN 0
+                 WHEN 1 THEN 3600000
+                 WHEN 2 THEN 21600000
+                 ELSE 86400000 END) <= ?1
+         )
+         OR (
+           events_pulls_count >= 4
+           AND (
+                 COALESCE(events_last_pulled_at_ms, 0) + ?2 <= ?1
+              OR COALESCE(events_last_pulled_at_ms, 0) + ?2 > created_at_ms + ?3
+           )
+         )
        ORDER BY COALESCE(events_last_pulled_at_ms, 0) ASC
-       LIMIT ?`,
+       LIMIT ?4`,
     )
-    .bind(limit > 0 ? limit : 25)
+    .bind(nowMs, DAILY_MS, maxAgeMs, limit > 0 ? limit : 25)
     .all<DueEventPullRow>();
   return results ?? [];
 }

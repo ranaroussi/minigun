@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -316,6 +317,76 @@ func TestListDueEventPulls_IncludesPastWindow(t *testing.T) {
 	}
 	if !have["s_old"] {
 		t.Fatal("missing past-window send s_old — would never get frozen")
+	}
+}
+
+// A burst-due send must not be starved behind a large backlog of
+// not-yet-due daily sends. The queue is ordered by
+// events_last_pulled_at_ms ASC; a fresh send waiting on its +1h beat was
+// pulled more recently than the daily backlog, so it sorts BEHIND them.
+// Pre-fix the SQL fetched the oldest LIMIT rows then filtered due-ness in
+// memory, so the not-due daily sends filled the window and the burst send
+// never surfaced. The due predicate now lives in SQL, so it surfaces even
+// with a small LIMIT.
+func TestListDueEventPulls_BurstSendNotStarvedByBacklog(t *testing.T) {
+	st, d := newTestStore(t)
+	ctx := context.Background()
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO companies (id, slug, name, sending_domain, created_at, updated_at)
+		VALUES ('co_starve', 'starve', 'Starve', 'mg.x.com', datetime('now'), datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
+	nowMs := time.Now().UnixMilli()
+	// 50 daily-phase sends pulled 2h ago — NOT due (need 24h). They sort
+	// ahead (older last_pulled) of the burst send below.
+	for i := 0; i < 50; i++ {
+		id := fmt.Sprintf("s_daily_%02d", i)
+		if _, err := d.ExecContext(ctx, `
+			INSERT INTO sends (
+			  id, type, subject, from_header, sending_domain, status,
+			  batch_size, throttle_ms, test_mode, last_subscription_id,
+			  total_recipients, unsubscribe_mode, created_at, updated_at, completed_at,
+			  events_pulls_count, events_last_pulled_at_ms
+			) VALUES (?, 'bulk', 'D', 'r@x.com', 'mg.x.com', 'completed',
+			          500, 1000, 0, 0, 100, 'local',
+			          datetime('now', '-10 days'), datetime('now', '-10 days'), datetime('now', '-10 days'),
+			          5, ?)`,
+			id, nowMs-2*60*60*1000,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One burst send: created 90m ago, +0 pull done 1h ago, so its +1h
+	// beat is due. It sorts behind the backlog (pulled more recently).
+	if _, err := d.ExecContext(ctx, `
+		INSERT INTO sends (
+		  id, type, subject, from_header, sending_domain, status,
+		  batch_size, throttle_ms, test_mode, last_subscription_id,
+		  total_recipients, unsubscribe_mode, created_at, updated_at, completed_at,
+		  events_pulls_count, events_last_pulled_at_ms
+		) VALUES ('s_burst', 'bulk', 'B', 'r@x.com', 'mg.x.com', 'completed',
+		          500, 1000, 0, 0, 100, 'local',
+		          datetime('now', '-90 minutes'), datetime('now', '-90 minutes'), datetime('now', '-90 minutes'),
+		          1, ?)`,
+		nowMs-60*60*1000,
+	); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ListDueEventPulls(ctx, nowMs, 30*24*60*60*1000, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, r := range rows {
+		have[r.SendID] = true
+	}
+	if !have["s_burst"] {
+		t.Fatalf("burst-due send starved behind not-due daily backlog; got %d rows: %v", len(rows), have)
+	}
+	for id := range have {
+		if id != "s_burst" {
+			t.Fatalf("not-due daily send %s should not be returned", id)
+		}
 	}
 }
 
