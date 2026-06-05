@@ -158,14 +158,21 @@ export async function listDueSendStats(
 ): Promise<DueStatsRow[]> {
   const { results } = await db
     .prepare(
+      // next_fetch_at is written in two formats: applyMailgunStats stores
+      // JS toISOString() ("2026-06-05T12:09:15.905Z") while the read-path
+      // touch stores SQLite's datetime() ("2026-06-05 12:09:15"). A raw
+      // string "<=" compares the 'T' separator (0x54) against ' ' (0x20),
+      // so an ISO timestamp always sorts AFTER a same-day SQLite "now" and
+      // the row never reads as due until the next calendar day. Normalize
+      // both sides through datetime() so the comparison is chronological.
       `SELECT s.id AS send_id, s.created_at, s.completed_at
          FROM send_stats ss
          JOIN sends s ON s.id = ss.send_id
         WHERE ss.is_final = 0
           AND ss.next_fetch_at IS NOT NULL
-          AND ss.next_fetch_at <= datetime('now')
+          AND datetime(ss.next_fetch_at) <= datetime('now')
           AND s.completed_at IS NOT NULL
-        ORDER BY ss.next_fetch_at ASC
+        ORDER BY datetime(ss.next_fetch_at) ASC
         LIMIT ?`,
     )
     .bind(limit > 0 ? limit : 25)
