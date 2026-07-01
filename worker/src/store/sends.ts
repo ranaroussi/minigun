@@ -175,6 +175,20 @@ export async function listRunningSends(db: D1Database): Promise<Send[]> {
   return results;
 }
 
+// Reports whether any send is currently mid-flight (queued or running).
+// Used to pause the engagement events-pull while a send is draining: the
+// per-tick pull and the send's step loop compete for the same cron/CPU
+// budget, and starving the send watchdog is the worse failure. Cheap:
+// a single indexed COUNT with an early LIMIT.
+export async function hasActiveSend(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS n FROM sends WHERE status IN ('queued', 'running') LIMIT 1`,
+    )
+    .first<{ n: number }>();
+  return row != null;
+}
+
 export async function listStuckSends(
   db: D1Database,
   staleBefore: string,

@@ -13,6 +13,7 @@ import {
   recordEventPullError,
   recordEventPullProgress,
 } from '../store/events';
+import { hasActiveSend } from '../store/sends';
 
 // ---------------------------------------------------------------------------
 // Schedule
@@ -89,6 +90,18 @@ export function nextDueAt(row: {
 // when ENGAGEMENT_STATS_ENABLED is unset (engagement retrieval feature flag).
 export async function pullDueSendEvents(env: Env, limit = 20): Promise<void> {
   if (!engagementStatsEnabled(env)) return;
+  // Pause retrieval while a send is in flight. The events-pull can burn the
+  // whole scheduled-handler CPU budget folding the dense delivery burst of a
+  // large send, which starves sweepStuckSends and wedges the very send that
+  // is generating those events. Deferring the pull by a tick (or a few, for
+  // long sends) is harmless — the burst/daily schedule is anchored to
+  // created_at and stays "due" until it runs, so nothing is dropped.
+  try {
+    if (await hasActiveSend(env.DB)) return;
+  } catch (err) {
+    console.error('events-pull: active-send check', err);
+    return;
+  }
   const now = Date.now();
   let candidates: DueEventPullRow[];
   try {

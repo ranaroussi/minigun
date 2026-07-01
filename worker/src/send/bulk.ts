@@ -55,10 +55,8 @@ export async function step(env: Env, sendID: string): Promise<StepResult> {
     return { state: 'completed' };
   }
 
-  const batchIndex = await nextBatchIndex(env.DB, sendID);
   const startID = recipients[0]!.subscription_id;
   const endID = recipients[recipients.length - 1]!.subscription_id;
-  const batch = await createBatch(env.DB, sendID, batchIndex, startID, endID, recipients.length);
 
   const recipVars: Record<string, Record<string, unknown>> = {};
   const subIDs: string[] = [];
@@ -68,6 +66,16 @@ export async function step(env: Env, sendID: string): Promise<StepResult> {
     subIDs.push(String(r.subscription_id));
     recipVars[r.email] = await buildRecipientVars(env, snd, r);
   }
+
+  // Create the batch row (status 'in_flight') only now — after the CPU-heavy
+  // recipient-variable build above — so an invocation killed mid-build (e.g.
+  // exceededCpu) can't leave an orphaned 'in_flight' batch. An orphan is
+  // doubly harmful: step() short-circuits to 'busy' while one exists, and
+  // sweepStuckSends excludes sends that have one, so the send wedges with no
+  // watchdog able to recover it. Narrowing the window to just the Mailgun
+  // call + status write keeps that failure mode as small as possible.
+  const batchIndex = await nextBatchIndex(env.DB, sendID);
+  const batch = await createBatch(env.DB, sendID, batchIndex, startID, endID, recipients.length);
 
   try {
     const resp = await sendMessageWithRetry(env, {

@@ -8,7 +8,8 @@ workers_dev = false
 # Bind the worker to the custom subdomain mailer.misc.sh on the misc.sh zone.
 # Cloudflare auto-provisions the DNS record because custom_domain = true.
 routes = [
-  { pattern = "mailer.misc.sh", custom_domain = true }
+  { pattern = "mailer.misc.sh", custom_domain = true },
+  { pattern = "geo.misc.sh", custom_domain = true }
 ]
 
 # Public origin used to build per-recipient unsubscribe and manage URLs.
@@ -20,6 +21,9 @@ REDIRECT_URL = "https://varops.com"
 # Gates engagement retrieval: the events-pull cron that folds Mailgun events
 # into the per-recipient rollups. Retrieval only — acting on the data
 # (pruning) is the separate LIST_HYGIENE_AUTO_PRUNE_ENABLED flag.
+# Safe to keep on: pullDueSendEvents now pauses itself while any send is in
+# flight (see src/send/events_pull.ts hasActiveSend guard), so the per-tick
+# pull can no longer starve the send watchdog's CPU budget mid-send.
 ENGAGEMENT_STATS_ENABLED = "true"
 
 [[d1_databases]]
