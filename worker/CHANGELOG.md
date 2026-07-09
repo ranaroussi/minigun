@@ -3,6 +3,27 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-07-09
+
+### Fixed
+- Watchdog now self-heals sends wedged by an orphaned `in_flight` batch.
+  `sweepStuckSends` calls the new `reclaimStuckBatches`, which flips any
+  batch left `in_flight` past the 2-minute stale window to `failed` before
+  listing stuck sends. A Worker invocation cannot run for minutes, so such a
+  batch is provably orphaned (its invocation died before recording an
+  outcome); clearing it lets the send resume from its cursor and re-send that
+  range. The 0.2.0 fix only narrowed the orphan window — it did not let the
+  watchdog recover an orphan that still occurred, so a wedged send required
+  manual intervention. Trade-off: a worker that died after Mailgun accepted
+  but before the batch row was written (sub-second window) yields a duplicate
+  for that batch, which is preferable to a permanently stalled send.
+
+### Changed
+- Default bulk `batch_size` lowered from 500 to 250. At 500 recipients the
+  per-batch recipient-variable build repeatedly exhausted the CPU budget and
+  orphaned the batch; 250 halves that cost while the reclaim watchdog covers
+  any residual orphan.
+
 ## [0.2.0] - 2026-07-01
 
 ### Added

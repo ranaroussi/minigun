@@ -44,7 +44,7 @@ export type NewSendParams = {
 export async function createSend(db: D1Database, p: NewSendParams): Promise<Send> {
   const id = newSend();
   const now = nowISO();
-  const batchSize = p.batch_size && p.batch_size > 0 ? p.batch_size : 500;
+  const batchSize = p.batch_size && p.batch_size > 0 ? p.batch_size : 250;
   const throttleMs = p.throttle_ms !== undefined && p.throttle_ms >= 0 ? p.throttle_ms : 1000;
   const mode = p.unsubscribe_mode || 'local';
   // Park the send only when send_at is genuinely in the future; a past or
@@ -187,6 +187,34 @@ export async function hasActiveSend(db: D1Database): Promise<boolean> {
     )
     .first<{ n: number }>();
   return row != null;
+}
+
+// Reclaim batches left 'in_flight' past the stale window. A batch is flipped
+// to 'in_flight' immediately before the Mailgun call and to succeeded/failed
+// right after; a Worker invocation cannot run for minutes, so an in_flight
+// batch older than staleBefore is orphaned (its invocation died, e.g.
+// exceededCpu, before recording an outcome). listStuckSends deliberately
+// skips any send that still has an in_flight batch, so an orphan would wedge
+// the send forever. Marking the orphan 'failed' frees the send to resume from
+// its cursor and re-send that range. Trade-off: if the worker died AFTER
+// Mailgun accepted but BEFORE this row was written (a sub-second window),
+// those recipients get a duplicate. That narrow risk beats a permanently
+// stalled send. Returns the number of batches reclaimed.
+export async function reclaimStuckBatches(
+  db: D1Database,
+  staleBefore: string,
+): Promise<number> {
+  const res = await db
+    .prepare(
+      `UPDATE send_batches
+          SET status = 'failed',
+              mailgun_response = 'reclaimed: in_flight past stale window (orphaned invocation)',
+              updated_at = ?
+        WHERE status = 'in_flight' AND updated_at < ?`,
+    )
+    .bind(nowISO(), staleBefore)
+    .run();
+  return (res.meta as { changes?: number } | undefined)?.changes ?? 0;
 }
 
 export async function listStuckSends(

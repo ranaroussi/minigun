@@ -1,10 +1,22 @@
 import { Env, selfCall } from '../env';
-import { listDueScheduledSends, listStuckSends } from '../store/sends';
+import {
+  listDueScheduledSends,
+  listStuckSends,
+  reclaimStuckBatches,
+} from '../store/sends';
 
 const STALE_MS = 2 * 60 * 1000;
 
 export async function sweepStuckSends(env: Env): Promise<void> {
   const staleBefore = new Date(Date.now() - STALE_MS).toISOString();
+  // Free any send wedged by an orphaned in_flight batch before listing:
+  // listStuckSends skips sends that still have one, so this must run first.
+  try {
+    const reclaimed = await reclaimStuckBatches(env.DB, staleBefore);
+    if (reclaimed > 0) console.warn('cron reclaimed orphaned batches', reclaimed);
+  } catch (err) {
+    console.error('cron reclaim stuck batches', err);
+  }
   let stuck;
   try {
     stuck = await listStuckSends(env.DB, staleBefore);
