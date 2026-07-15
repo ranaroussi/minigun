@@ -3,6 +3,28 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.2] - 2026-07-15
+
+### Fixed
+- Bulk sends can no longer wedge on an oversized `batch_size`, the recurring
+  root cause of stalled sends. Two layers:
+  - `createSend` now clamps `batch_size` to `MAX_BATCH_SIZE` (100) regardless
+    of what the caller (CLI, MCP, API) requests. Building a batch's
+    per-recipient Mailgun variables is CPU-bound and linear in size; above
+    ~100 an invocation trips the Workers CPU limit and dies before recording
+    an outcome. The prior 0.2.1 default of 250 was silently overridden because
+    the CLI hard-coded `--batch-size 500`; a server-side clamp closes that.
+  - `sweepStuckSends` now self-heals: a running send stalled past the stale
+    window with no `in_flight` batch (its step chain died mid-build) has its
+    `batch_size` halved toward `SAFE_BATCH_FLOOR` (100) before the watchdog
+    re-kicks it, so any oversized/legacy send walks down (500 -> 250 -> 125 ->
+    100) until step() completes, without a manual fix.
+
+### Changed
+- Default bulk `batch_size` is now 100 (was 250), matching the hard cap.
+- CLI `--batch-size` default lowered 500 -> 100 (`cli` and `src` send
+  commands); MCP tool doc updated to note the server-side cap.
+
 ## [0.2.1] - 2026-07-09
 
 ### Fixed

@@ -656,7 +656,7 @@ func init() {
 	sendBulkCmd.Flags().StringVar(&bulkHTMLFile, "html", "", "HTML body file (used if --md is not provided)")
 	sendBulkCmd.Flags().StringVar(&bulkTextFile, "text", "", "Plain-text body file (optional; auto-generated from --md/--html otherwise)")
 	sendBulkCmd.Flags().StringVar(&bulkTemplate, "template", "", "HTML wrapper template file ({{content}} is replaced with the rendered body)")
-	sendBulkCmd.Flags().IntVar(&bulkBatchSize, "batch-size", 500, "Mailgun batch size")
+	sendBulkCmd.Flags().IntVar(&bulkBatchSize, "batch-size", 100, "Mailgun batch size")
 	sendBulkCmd.Flags().IntVar(&bulkThrottleMS, "throttle-ms", 1000, "Sleep between batches in ms")
 	sendBulkCmd.Flags().StringVar(&bulkNotifyTo, "notify", "", "Email to notify on completion or failure")
 	sendBulkCmd.Flags().StringVar(&bulkUnsubMode, "unsub-mode", "local", "Unsubscribe mode: local | redirect | external")

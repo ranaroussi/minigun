@@ -270,7 +270,7 @@ type sendBulkInput struct {
 	HTML        string `json:"html,omitempty"`
 	Text        string `json:"text,omitempty"`
 	Template    string `json:"template,omitempty" jsonschema:"Wrapper template name (server-side)"`
-	BatchSize   int    `json:"batch_size,omitempty" jsonschema:"Recipients per Mailgun batch (default 500, max 1000)"`
+	BatchSize   int    `json:"batch_size,omitempty" jsonschema:"Recipients per Mailgun batch (default 100, capped at 100 server-side)"`
 	ThrottleMS  int    `json:"throttle_ms,omitempty" jsonschema:"Sleep between batches in milliseconds"`
 	NotifyEmail string `json:"notify_email,omitempty" jsonschema:"Email to notify on send completion or failure"`
 	UnsubMode   string `json:"unsub_mode,omitempty" jsonschema:"local | redirect | external"`

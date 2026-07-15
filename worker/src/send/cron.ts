@@ -1,8 +1,10 @@
 import { Env, selfCall } from '../env';
 import {
+  SAFE_BATCH_FLOOR,
   listDueScheduledSends,
   listStuckSends,
   reclaimStuckBatches,
+  reduceStuckSendBatchSize,
 } from '../store/sends';
 
 const STALE_MS = 2 * 60 * 1000;
@@ -26,6 +28,14 @@ export async function sweepStuckSends(env: Env): Promise<void> {
   }
   for (const snd of stuck) {
     try {
+      // A stalled send with no in_flight batch means its step chain died
+      // building the batch (too large for the CPU limit). Halving toward the
+      // safe floor lets a fresh kick complete; oversized sends self-heal
+      // instead of needing a manual batch_size fix.
+      if (snd.batch_size > SAFE_BATCH_FLOOR) {
+        const reduced = await reduceStuckSendBatchSize(env.DB, snd.id, SAFE_BATCH_FLOOR);
+        if (reduced > 0) console.warn('cron reduced stuck send batch_size', snd.id);
+      }
       const resp = await selfCall(env, `/send/${snd.id}/next`);
       if (!resp.ok) console.error('cron kick non-ok', snd.id, resp.status);
     } catch (err) {

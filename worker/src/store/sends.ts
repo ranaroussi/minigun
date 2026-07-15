@@ -41,10 +41,25 @@ export type NewSendParams = {
   send_at?: string | null;
 };
 
+// Hard cap on recipients per batch, enforced regardless of what a caller
+// (CLI, MCP, API) requests. Building a batch's per-recipient Mailgun variables
+// (HMAC-signed unsub tokens + merge vars) is CPU-bound and linear in size;
+// above ~100 an invocation reliably trips the Workers CPU limit, dies before
+// recording an outcome, and stalls the send. 100 has drained large sends
+// cleanly and repeatedly. Used both as the default and the ceiling.
+export const MAX_BATCH_SIZE = 100;
+
+// Floor the watchdog reduces a stalled send's batch_size down to. Anything at
+// or below this is treated as already safe. Matches MAX_BATCH_SIZE today but
+// kept distinct so the creation cap can be raised without lowering the
+// self-heal safety net.
+export const SAFE_BATCH_FLOOR = 100;
+
 export async function createSend(db: D1Database, p: NewSendParams): Promise<Send> {
   const id = newSend();
   const now = nowISO();
-  const batchSize = p.batch_size && p.batch_size > 0 ? p.batch_size : 250;
+  const requested = p.batch_size && p.batch_size > 0 ? p.batch_size : MAX_BATCH_SIZE;
+  const batchSize = Math.min(requested, MAX_BATCH_SIZE);
   const throttleMs = p.throttle_ms !== undefined && p.throttle_ms >= 0 ? p.throttle_ms : 1000;
   const mode = p.unsubscribe_mode || 'local';
   // Park the send only when send_at is genuinely in the future; a past or
@@ -213,6 +228,31 @@ export async function reclaimStuckBatches(
         WHERE status = 'in_flight' AND updated_at < ?`,
     )
     .bind(nowISO(), staleBefore)
+    .run();
+  return (res.meta as { changes?: number } | undefined)?.changes ?? 0;
+}
+
+// Halve a stalled send's batch_size, never below `floor`. Called by the
+// watchdog when a running send's step chain has died without progress (its
+// batch was too large to build under the CPU limit). Halving on each stale
+// sweep walks an oversized send (e.g. a legacy 500) down toward the safe
+// floor until step() completes, so it self-heals instead of needing a manual
+// batch_size fix. The batch_size guard makes it a no-op once at/under floor,
+// and bumping updated_at paces reductions to one per stale window. Returns the
+// number of rows changed (1 when reduced, 0 when already at/under floor).
+export async function reduceStuckSendBatchSize(
+  db: D1Database,
+  id: string,
+  floor: number,
+): Promise<number> {
+  const res = await db
+    .prepare(
+      `UPDATE sends
+          SET batch_size = MAX(?, batch_size / 2),
+              updated_at = ?
+        WHERE id = ? AND status IN ('queued', 'running') AND batch_size > ?`,
+    )
+    .bind(floor, nowISO(), id, floor)
     .run();
   return (res.meta as { changes?: number } | undefined)?.changes ?? 0;
 }

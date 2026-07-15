@@ -62,7 +62,7 @@ func init() {
 	sendBulkCmd.Flags().StringVar(&sendMDFile, "md", "", "Markdown body file")
 	sendBulkCmd.Flags().StringVar(&sendHTMLFile, "html", "", "HTML body file")
 	sendBulkCmd.Flags().StringVar(&sendTemplate, "template", "", "Wrapper template name")
-	sendBulkCmd.Flags().IntVar(&sendBatchSize, "batch-size", 500, "Batch size")
+	sendBulkCmd.Flags().IntVar(&sendBatchSize, "batch-size", 100, "Batch size")
 	sendBulkCmd.Flags().IntVar(&sendThrottleMS, "throttle-ms", 1000, "Throttle between batches in ms")
 	sendBulkCmd.Flags().StringVar(&sendNotifyTo, "notify", "", "Email to notify on completion or failure")
 	sendBulkCmd.Flags().StringVar(&sendUnsubMode, "unsub-mode", "local", "Unsubscribe mode: local|redirect|external")
