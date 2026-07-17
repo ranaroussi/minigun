@@ -3,6 +3,20 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.3] - 2026-07-17
+
+### Changed
+- Raised the bulk `batch_size` cap 100 -> 200 (`MAX_BATCH_SIZE`) for better
+  throughput. The self-heal floor stays at 100, so if an isolate ever trips
+  the CPU limit at 200 the watchdog still walks it back down to a safe size.
+- The inter-batch throttle is now governed worker-side: `createSend` clamps
+  `throttle_ms` to `MAX_THROTTLE_MS` (500ms). Callers may request a shorter
+  delay, but larger values are capped, so the operative pace is controlled
+  here rather than by a caller's hard-coded default (the CLI still emits its
+  own default on every send). Default when unspecified is also 500ms.
+- CLI `--batch-size` default 100 -> 200 and `--throttle-ms` default 1000 -> 500
+  (`cli` and `src` send commands); MCP tool doc updated.
+
 ## [0.2.2] - 2026-07-15
 
 ### Fixed

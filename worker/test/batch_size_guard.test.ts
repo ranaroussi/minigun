@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_BATCH_SIZE,
+  MAX_THROTTLE_MS,
   SAFE_BATCH_FLOOR,
   reduceStuckSendBatchSize,
 } from '../src/store/sends';
@@ -25,9 +26,11 @@ function dbCapturing(changes: number) {
 }
 
 describe('batch_size guards', () => {
-  it('caps the creation size at 100 and keeps a safe floor of 100', () => {
-    expect(MAX_BATCH_SIZE).toBe(100);
+  it('caps the creation size at 200, keeps a safe floor of 100, throttle ceiling 500', () => {
+    expect(MAX_BATCH_SIZE).toBe(200);
     expect(SAFE_BATCH_FLOOR).toBe(100);
+    expect(MAX_THROTTLE_MS).toBe(500);
+    expect(SAFE_BATCH_FLOOR).toBeLessThanOrEqual(MAX_BATCH_SIZE);
   });
 
   it('halves toward the floor and only touches oversized running sends', async () => {

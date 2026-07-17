@@ -44,23 +44,31 @@ export type NewSendParams = {
 // Hard cap on recipients per batch, enforced regardless of what a caller
 // (CLI, MCP, API) requests. Building a batch's per-recipient Mailgun variables
 // (HMAC-signed unsub tokens + merge vars) is CPU-bound and linear in size;
-// above ~100 an invocation reliably trips the Workers CPU limit, dies before
-// recording an outcome, and stalls the send. 100 has drained large sends
-// cleanly and repeatedly. Used both as the default and the ceiling.
-export const MAX_BATCH_SIZE = 100;
+// too large an invocation trips the Workers CPU limit, dies before recording
+// an outcome, and stalls the send. 200 balances throughput against that risk;
+// if an isolate ever chokes at 200, the watchdog self-heals down to
+// SAFE_BATCH_FLOOR. Used both as the default and the ceiling.
+export const MAX_BATCH_SIZE = 200;
 
-// Floor the watchdog reduces a stalled send's batch_size down to. Anything at
-// or below this is treated as already safe. Matches MAX_BATCH_SIZE today but
-// kept distinct so the creation cap can be raised without lowering the
-// self-heal safety net.
+// Floor the watchdog reduces a stalled send's batch_size down to. 100 has
+// drained large sends cleanly and repeatedly, so it is the proven-safe target;
+// kept distinct from MAX_BATCH_SIZE so the creation cap can be raised without
+// lowering the self-heal safety net.
 export const SAFE_BATCH_FLOOR = 100;
+
+// Ceiling on the inter-batch sleep, enforced worker-side so the operative
+// pace is governed here rather than by whatever a caller hard-codes. Callers
+// may request a shorter delay; anything larger is capped to this.
+export const MAX_THROTTLE_MS = 500;
 
 export async function createSend(db: D1Database, p: NewSendParams): Promise<Send> {
   const id = newSend();
   const now = nowISO();
   const requested = p.batch_size && p.batch_size > 0 ? p.batch_size : MAX_BATCH_SIZE;
   const batchSize = Math.min(requested, MAX_BATCH_SIZE);
-  const throttleMs = p.throttle_ms !== undefined && p.throttle_ms >= 0 ? p.throttle_ms : 1000;
+  const reqThrottle =
+    p.throttle_ms !== undefined && p.throttle_ms >= 0 ? p.throttle_ms : MAX_THROTTLE_MS;
+  const throttleMs = Math.min(reqThrottle, MAX_THROTTLE_MS);
   const mode = p.unsubscribe_mode || 'local';
   // Park the send only when send_at is genuinely in the future; a past or
   // absent value sends now (status 'queued', send_at NULL).
