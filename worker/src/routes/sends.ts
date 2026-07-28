@@ -180,26 +180,15 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         202,
       );
     }
-    // Run the first batch inline rather than self-fetching /send/:id/next.
-    // The fire-and-forget kick was unreliable on this worker (waitUntil could
-    // drop the in-flight subrequest before it landed), leaving sends stuck in
-    // 'queued' until the cron sweep picked them up. Executing step() here
-    // guarantees the chain has actually started before we return 202.
-    // Subsequent batches still ride the scheduleNextStep self-fetch chain;
-    // the cron sweep is the safety net if that drops.
-    let respStatus: typeof snd.status = snd.status;
-    try {
-      const result = await step(c.env, snd.id);
-      if (result.state === 'sent') {
-        respStatus = 'running';
-        scheduleNextStep(c.env, c.executionCtx, snd.id, snd.throttle_ms);
-      } else if (result.state === 'completed') {
-        respStatus = 'completed';
-      }
-    } catch (err) {
-      console.error('initial step failed', snd.id, err);
-    }
-    return c.json({ send_id: snd.id, status: respStatus, total_recipients: total }, 202);
+    // Kick the first batch on the self-call chain instead of running step()
+    // inline. Doing the recipient build, token signing, and Mailgun call
+    // inside this request made it the heaviest invocation in the worker and
+    // pushed borderline creations past the resource limit (Cloudflare 1102).
+    // Deferring keeps the creation request light: step() runs in its own
+    // invocation via the chain, and the every-minute cron watchdog is the
+    // safety net that starts (or reclaims) the send if the kick is dropped.
+    scheduleNextStep(c.env, c.executionCtx, snd.id, 0);
+    return c.json({ send_id: snd.id, status: snd.status, total_recipients: total }, 202);
   });
 
   app.post('/send/single', async (c) => {

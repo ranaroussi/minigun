@@ -3,6 +3,24 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.4] - 2026-07-28
+
+### Fixed
+- `POST /send/bulk` no longer runs the first batch inline. Building recipient
+  variables, signing tokens, and calling Mailgun inside the creation request
+  made it the heaviest single invocation in the worker, so a borderline
+  creation could exceed the isolate resource limit and return Cloudflare
+  Error 1102 to the caller (even though the send itself then self-healed via
+  the watchdog). The handler now returns 202 immediately after `createSend`
+  and kicks the first batch on the self-call chain (`scheduleNextStep`), with
+  the every-minute cron watchdog as the safety net if that kick drops. The
+  created send is reported as `queued`.
+
+### Changed
+- `buildBody` renders the markdown once and derives the plain-text part from
+  the already-rendered HTML instead of parsing the source a second time,
+  halving the markdown-parse cost of the creation request.
+
 ## [0.2.3] - 2026-07-17
 
 ### Changed

@@ -139,7 +139,7 @@ export function buildBody(
 
   const { rewritten: rewrittenHTML, vars: htmlVars } = rewriteVariables(wrapped);
 
-  let text = htmlToText(markdownToHTML(rewrittenMD));
+  let text = htmlToText(rendered);
   if (addAutoFooter) {
     text += rewriteVariables(UNSUB_FOOTER_TEXT).rewritten;
   }
