@@ -86,6 +86,7 @@ export async function listDueEventPulls(
          FROM sends
          WHERE events_archive_complete = 0
            AND test_mode = 0
+           AND type = 'bulk'
            AND status IN ('completed', 'failed', 'cancelled', 'running')
            AND sending_domain != ''
        )

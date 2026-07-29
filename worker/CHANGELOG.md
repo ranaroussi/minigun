@@ -3,6 +3,17 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.5] - 2026-07-29
+
+### Changed
+- The engagement events-pull cron now considers only `type = 'bulk'` sends.
+  Single (transactional/welcome) sends are no longer polled against Mailgun's
+  events API, so they stop spinning up a per-send 30-day pull schedule and no
+  longer fold opens/clicks into the message-engagement rollups. Mailgun-side
+  open/click tracking on those emails is unchanged; we simply don't ingest it.
+  Existing single sends drop out of the candidate set automatically (no
+  backfill or schema change).
+
 ## [0.2.4] - 2026-07-28
 
 ### Fixed
