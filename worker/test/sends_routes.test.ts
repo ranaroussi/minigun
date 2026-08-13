@@ -18,6 +18,23 @@ function dbReturning(send: Record<string, unknown> | null, changes = 0): D1Datab
   return db as D1Database;
 }
 
+// Stub for the list-scoped feed: resolveList reads the list via first(), and
+// listSends reads the feed via all(). Setting both lets us exercise the
+// `GET /sends?list=` control flow (resolve -> filter -> shape).
+function dbForSends(
+  listRow: Record<string, unknown> | null,
+  sendItems: Record<string, unknown>[],
+): D1Database {
+  const prepared: any = {
+    bind: () => prepared,
+    all: async () => ({ results: sendItems, success: true, meta: {} }),
+    first: async () => listRow,
+    run: async () => ({ meta: { changes: 0 } }),
+  };
+  const db: any = { prepare: () => prepared, batch: async () => [] };
+  return db as D1Database;
+}
+
 function newApp() {
   const app = new Hono<{ Bindings: Env }>();
   mountSends(app);
@@ -51,5 +68,42 @@ describe('cancel route', () => {
     expect(res.status).toBe(404);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe('send not found');
+  });
+});
+
+describe('sends list route', () => {
+  it('filters by list (slug or id) and returns its sends', async () => {
+    const app = newApp();
+    const env = {
+      DB: dbForSends({ id: 'l_1', slug: 'ranaroussi' }, [
+        { id: 's_1', list_id: 'l_1', created_at: '2026-08-13T11:40:00.000Z' },
+      ]),
+    } as unknown as Env;
+
+    const res = await app.request('http://x/sends?limit=1&list=ranaroussi', {}, env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: { id: string }[] };
+    expect(body.items.length).toBe(1);
+    expect(body.items[0]?.id).toBe('s_1');
+  });
+
+  it('404s when the list filter names an unknown list', async () => {
+    const app = newApp();
+    const env = { DB: dbForSends(null, []) } as unknown as Env;
+
+    const res = await app.request('http://x/sends?list=nope', {}, env);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('list not found');
+  });
+
+  it('returns an empty feed for a list that has no sends', async () => {
+    const app = newApp();
+    const env = { DB: dbForSends({ id: 'l_2', slug: 'empty' }, []) } as unknown as Env;
+
+    const res = await app.request('http://x/sends?list=empty', {}, env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: unknown[] };
+    expect(body.items.length).toBe(0);
   });
 });

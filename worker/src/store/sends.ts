@@ -329,6 +329,7 @@ export async function listSends(
   afterCreatedAt: string,
   afterID: string,
   limit: number,
+  listID = '',
 ): Promise<SendSummary[]> {
   const { results } = await db
     .prepare(
@@ -336,10 +337,11 @@ export async function listSends(
               send_at, created_at, updated_at, completed_at
          FROM sends
         WHERE (? = '' OR created_at < ? OR (created_at = ? AND id < ?))
+          AND (? = '' OR list_id = ?)
         ORDER BY created_at DESC, id DESC
         LIMIT ?`,
     )
-    .bind(afterCreatedAt, afterCreatedAt, afterCreatedAt, afterID, limit)
+    .bind(afterCreatedAt, afterCreatedAt, afterCreatedAt, afterID, listID, listID, limit)
     .all<SendSummary>();
   return results;
 }

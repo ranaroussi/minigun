@@ -10,7 +10,7 @@ import (
 	"github.com/ranaroussi/minigun/cli/internal/client"
 )
 
-const Version = "0.4.4"
+const Version = "0.4.5"
 
 const defaultAPIURL = "http://127.0.0.1:8080"
 

@@ -1,6 +1,6 @@
 {
   "name": "minigun-worker",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "MiniGun on Cloudflare Workers + D1",
   "type": "module",

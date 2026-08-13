@@ -476,11 +476,25 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       return c.json({ error: 'invalid cursor' }, 400);
     }
     const limit = clampLimit(Number(c.req.query('limit') ?? '0'));
+    // Optional list filter accepts a slug or an id, mirroring other :list
+    // routes. An unknown list is a 404 so callers can tell "no such list"
+    // apart from "list exists but has no sends" (an empty items array).
+    let listID = '';
+    const listKey = c.req.query('list');
+    if (listKey && listKey.trim()) {
+      try {
+        listID = (await resolveList(c.env.DB, listKey.trim())).id;
+      } catch (err) {
+        if (err instanceof NotFoundError) return c.json({ error: 'list not found' }, 404);
+        throw err;
+      }
+    }
     const items = await listSends(
       c.env.DB,
       cursor.afterCreated ?? '',
       cursor.afterStringID ?? '',
       limit + 1,
+      listID,
     );
     const hasMore = items.length > limit;
     const trimmed = hasMore ? items.slice(0, limit) : items;

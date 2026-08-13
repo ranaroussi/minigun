@@ -428,16 +428,66 @@ var progressTopCmd = newProgressCmd()
 
 var statsForce bool
 
+// looksLikeSendID reports whether s has the shape of a send id. Send ids are
+// prefixed "s_"; list slugs and list ids ("l_...") are not, which is what lets
+// `send stats` accept either a send id or a list.
+func looksLikeSendID(s string) bool {
+	return strings.HasPrefix(s, "s_")
+}
+
+// resolveStatsSendID returns arg unchanged when it is a send id. Otherwise it
+// treats arg as a list (slug or id) and resolves that list's most recent send.
+// A list that exists but has never been sent to is reported explicitly, rather
+// than silently reporting empty stats for a send that never happened.
+func resolveStatsSendID(cli *client.Client, arg string) (string, error) {
+	if looksLikeSendID(arg) {
+		return arg, nil
+	}
+	resp, err := cli.Get("/sends?limit=1&list=" + url.QueryEscape(arg))
+	if err != nil {
+		return "", err
+	}
+	if !resp.OK() {
+		return "", resp.Error()
+	}
+	var page struct {
+		Items []struct {
+			ID        string `json:"id"`
+			CreatedAt string `json:"created_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(resp.Body, &page); err != nil {
+		return "", fmt.Errorf("decode sends for list %q: %w", arg, err)
+	}
+	if len(page.Items) == 0 {
+		return "", fmt.Errorf("no sends found for list %q yet", arg)
+	}
+	it := page.Items[0]
+	fmt.Fprintf(os.Stderr, "list %s -> most recent send %s (created %s)\n", arg, it.ID, it.CreatedAt)
+	return it.ID, nil
+}
+
 var sendStatsCmd = &cobra.Command{
-	Use:   "stats <send_id>",
+	Use:   "stats <send_id|list>",
 	Short: "Show send aggregate stats (delivered, opened, etc.)",
-	Args:  cobra.ExactArgs(1),
+	Long: `Show aggregate stats for a send (delivered, opened, clicked, complained, ...).
+
+The argument is either a send id (s_...) or a list (slug or id). When a list is
+given, MiniGun resolves that list's most recent send and reports on it - handy
+when you don't have the send id in front of you. A list that has never been
+sent to is reported as such.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		path := fmt.Sprintf("/send/%s/stats", args[0])
+		cli := newClient()
+		sendID, err := resolveStatsSendID(cli, args[0])
+		if err != nil {
+			return err
+		}
+		path := fmt.Sprintf("/send/%s/stats", sendID)
 		if statsForce {
 			path += "?force=1"
 		}
-		resp, err := newClient().Get(path)
+		resp, err := cli.Get(path)
 		if err != nil {
 			return err
 		}

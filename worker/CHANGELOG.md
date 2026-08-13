@@ -3,6 +3,16 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.6] - 2026-08-13
+
+### Added
+- `GET /sends` accepts an optional `list` query parameter (slug or id) that
+  restricts the feed to one list, newest first. An unknown list returns 404,
+  while a known list with no sends returns an empty `items` array - so callers
+  can tell "no such list" apart from "list exists but was never sent to".
+  Powers the CLI's `send stats <list>`, which resolves a list's most recent
+  send when you don't have the send id handy.
+
 ## [0.2.5] - 2026-07-29
 
 ### Changed
