@@ -467,10 +467,30 @@ func resolveStatsSendID(cli *client.Client, arg string) (string, error) {
 	return it.ID, nil
 }
 
+// statNum coerces a decoded JSON stats value to a float64. Counts arrive as
+// JSON numbers (float64 once decoded into any); anything else reads as 0.
+func statNum(v any) float64 {
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
+}
+
+// ratePct formats part/whole as a one-decimal percentage, or "n/a" when the
+// denominator is zero (e.g. a send with nothing delivered, or no opens yet).
+func ratePct(part, whole float64) string {
+	if whole <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1f%%", part/whole*100)
+}
+
 var sendStatsCmd = &cobra.Command{
 	Use:   "stats <send_id|list>",
-	Short: "Show send aggregate stats (delivered, opened, etc.)",
-	Long: `Show aggregate stats for a send (delivered, opened, clicked, complained, ...).
+	Short: "Show send aggregate stats (delivered, opened, rates, etc.)",
+	Long: `Show aggregate stats for a send (delivered, opened, clicked, complained, ...),
+including the target list name and two derived rates: open_rate (opened /
+delivered) and click_to_open_rate (clicked / opened).
 
 The argument is either a send id (s_...) or a list (slug or id). When a list is
 given, MiniGun resolves that list's most recent send and reports on it - handy
@@ -491,8 +511,26 @@ sent to is reported as such.`,
 		if err != nil {
 			return err
 		}
-		printJSON(resp.Body)
-		return resp.Error()
+		if !resp.OK() {
+			printJSON(resp.Body)
+			return resp.Error()
+		}
+		// Augment the payload with the derived rates. If anything about the
+		// shape surprises us, fall back to printing the server response as-is.
+		var stats map[string]any
+		if err := json.Unmarshal(resp.Body, &stats); err != nil {
+			printJSON(resp.Body)
+			return nil
+		}
+		stats["open_rate"] = ratePct(statNum(stats["opened"]), statNum(stats["delivered"]))
+		stats["click_to_open_rate"] = ratePct(statNum(stats["clicked"]), statNum(stats["opened"]))
+		out, err := json.MarshalIndent(stats, "", "  ")
+		if err != nil {
+			printJSON(resp.Body)
+			return nil
+		}
+		fmt.Println(string(out))
+		return nil
 	},
 }
 

@@ -3,6 +3,14 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.7] - 2026-08-14
+
+### Added
+- `GET /send/:id/stats` now includes the target list's `list_id`, `list_slug`,
+  and `list_name` in every response branch (cached, live, and forced refresh).
+  Single/transactional sends and deleted lists return blanks rather than
+  failing. Lets `minigun send stats` name the list it is reporting on.
+
 ## [0.2.6] - 2026-08-13
 
 ### Added

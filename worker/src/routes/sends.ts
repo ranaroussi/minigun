@@ -377,6 +377,25 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       throw err;
     }
 
+    // Resolve the target list once so every response branch can name it.
+    // Single/transactional sends carry no list; a deleted list leaves blanks.
+    let listSlug = '';
+    let listName = '';
+    if (snd.list_id) {
+      try {
+        const l = await resolveList(c.env.DB, snd.list_id);
+        listSlug = l.slug;
+        listName = l.name;
+      } catch {
+        // list gone; leave the names blank rather than failing the stats read
+      }
+    }
+    const listInfo = {
+      list_id: snd.list_id ?? '',
+      list_slug: listSlug,
+      list_name: listName,
+    };
+
     // Force path: bypass the cache and the next_fetch_at schedule, pull
     // fresh numbers from Mailgun right now. When the send has completed we
     // also persist them (advancing the same schedule the cron uses) so the
@@ -420,6 +439,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         complained: totals.complained,
         unsubscribed: unsub,
         is_final: false,
+        ...listInfo,
         source: 'mailgun_forced',
       });
     }
@@ -436,6 +456,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         unsubscribed: st.unsubscribed,
         is_final: st.is_final,
         last_fetched_at: st.last_fetched_at,
+        ...listInfo,
         source: 'send_stats',
       });
     }
@@ -464,6 +485,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       complained: totals.complained,
       unsubscribed: unsub,
       is_final: false,
+      ...listInfo,
       source: 'mailgun_live',
     });
   });
