@@ -3,6 +3,24 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.8] - 2026-08-25
+
+### Performance
+- Migration `0013_cron_read_indexes` adds two partial indexes that cut the
+  every-minute `scheduled()` cron's D1 rows-read from ~14M/day to under 1M/day
+  (the free-tier cap is 5M/day). No application logic changed.
+  - `idx_send_batches_in_flight` on `send_batches(updated_at) WHERE status =
+    'in_flight'` collapses the two full `send_batches` SCANs per tick
+    (`reclaimStuckBatches` and the `listStuckSends` anti-join) to ~0-row index
+    lookups, since in-flight batches are transient and rare.
+  - `idx_sends_pull_due_bulk` on `sends(status) WHERE events_archive_complete =
+    0 AND test_mode = 0 AND type = 'bulk'` shrinks the `listDueEventPulls`
+    candidate scan from every completed send (~6k, mostly single sends that are
+    never pulled) to the ~20 non-frozen bulk sends. Keyed on `status` — the
+    column the query filters on — because SQLite won't prefer a partial index
+    whose leading column is absent from the WHERE. Run `ANALYZE sends` after
+    applying so the planner has row counts.
+
 ## [0.2.7] - 2026-08-14
 
 ### Added
