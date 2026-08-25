@@ -3,6 +3,25 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.9] - 2026-08-25
+
+### Performance
+- Cut D1 write volume from engagement ingestion (the free-tier limiter is
+  100K writes/day; ~all of it is the per-event folds). No aggregate stats
+  affected — those come from Mailgun's analytics API via the stats cron, not
+  these rollups.
+  - Migration `0014_drop_prune_indexes` drops `idx_engagement_prunable_by_count`
+    and `idx_engagement_prunable_by_recency`. Their key columns change on nearly
+    every ingested event, so each event re-wrote both — pure write amplification
+    while auto-prune is disabled and the sunset automation is unbuilt. Dropping
+    them roughly halves `contact_engagement` writes with no read/correctness
+    loss (manual prune still works via scan). Recreate them before enabling
+    auto-prune (statements are in the migration header).
+  - `ARCHIVE_MAX_AGE_MS` lowered 30d → 14d. Opens/clicks are front-loaded, so
+    the second half of the window folded almost nothing while still writing a
+    checkpoint per daily beat and keeping the send in the candidate set.
+    Freezing at 14d trims that write/read tail with negligible engagement loss.
+
 ## [0.2.8] - 2026-08-25
 
 ### Performance

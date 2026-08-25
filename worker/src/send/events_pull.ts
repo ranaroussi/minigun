@@ -33,9 +33,13 @@ const DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 // Total archive window, anchored to send.created_at. After this elapses
 // the send is frozen — no more polls, no more reads against Mailgun.
-// 30 days matches Mailgun's paid-tier retention; beyond it there's
-// nothing pullable that we haven't already seen.
-export const ARCHIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// 14 days: opens/clicks are overwhelmingly front-loaded (first few days),
+// so the second half of Mailgun's 30-day retention folds almost nothing
+// while keeping the send in the daily-pull candidate set and writing a
+// checkpoint each beat. Freezing at 14d trims that write/read tail with
+// negligible engagement loss. Raise back toward 30d if long-tail opens
+// ever matter more than the D1 budget.
+export const ARCHIVE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 // Hard cap on pages fetched per send per beat. Each page is one Mailgun
 // fetch + one batched contact lookup + chunked D1 write batches, so this
