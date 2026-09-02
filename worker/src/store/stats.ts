@@ -59,12 +59,19 @@ export function markSendCompletedForStatsStmt(
   db: D1Database,
   sendID: string,
 ): D1PreparedStatement {
+  // next_fetch_at must be written in the SAME format everywhere (JS ISO-8601,
+  // e.g. "2026-06-05T12:09:15.905Z") so listDueSendStats can compare it as a
+  // raw string and drive off idx_send_stats_due. Previously this used
+  // datetime('now') (SQLite's " " separator), which forced a datetime()
+  // wrapper in the due query, made the index non-sargable, and regressed the
+  // plan to a full sends scan (~9k rows/tick).
+  const now = nowISO();
   return db
     .prepare(
-      `UPDATE send_stats SET next_fetch_at = datetime('now'), updated_at = datetime('now')
+      `UPDATE send_stats SET next_fetch_at = ?, updated_at = ?
          WHERE send_id = ? AND next_fetch_at IS NULL AND is_final = 0`,
     )
-    .bind(sendID);
+    .bind(now, now, sendID);
 }
 
 export function incrementSendStatsUnsubscribedStmt(
@@ -158,24 +165,25 @@ export async function listDueSendStats(
 ): Promise<DueStatsRow[]> {
   const { results } = await db
     .prepare(
-      // next_fetch_at is written in two formats: applyMailgunStats stores
-      // JS toISOString() ("2026-06-05T12:09:15.905Z") while the read-path
-      // touch stores SQLite's datetime() ("2026-06-05 12:09:15"). A raw
-      // string "<=" compares the 'T' separator (0x54) against ' ' (0x20),
-      // so an ISO timestamp always sorts AFTER a same-day SQLite "now" and
-      // the row never reads as due until the next calendar day. Normalize
-      // both sides through datetime() so the comparison is chronological.
+      // next_fetch_at is now written in ONE format everywhere (JS ISO-8601 via
+      // nowISO / toISOString), so a raw lexical "<=" is exactly chronological.
+      // That keeps idx_send_stats_due sargable: SQLite drives the query off the
+      // partial index (range + ORDER BY satisfied, LIMIT pushed down) instead
+      // of the datetime()-wrapped form, which was non-sargable and regressed to
+      // a full sends scan reading ~9k rows every tick. Migration 0015 backfills
+      // any legacy SQLite-format rows; run ANALYZE send_stats so the planner
+      // knows the partial index is selective enough to prefer.
       `SELECT s.id AS send_id, s.created_at, s.completed_at
          FROM send_stats ss
          JOIN sends s ON s.id = ss.send_id
         WHERE ss.is_final = 0
           AND ss.next_fetch_at IS NOT NULL
-          AND datetime(ss.next_fetch_at) <= datetime('now')
+          AND ss.next_fetch_at <= ?
           AND s.completed_at IS NOT NULL
-        ORDER BY datetime(ss.next_fetch_at) ASC
+        ORDER BY ss.next_fetch_at ASC
         LIMIT ?`,
     )
-    .bind(limit > 0 ? limit : 25)
+    .bind(nowISO(), limit > 0 ? limit : 25)
     .all<DueStatsRow>();
   return results;
 }
