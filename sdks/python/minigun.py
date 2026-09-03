@@ -334,7 +334,7 @@ class Minigun:
         """One page of per-recipient message engagement for a send (one
         row per contact: sent/delivered timestamps, first/last open + click
         with counts, failure/complaint/unsubscribe state). Requires
-        EVENTS_ARCHIVE_ENABLED on the server.
+        ENGAGEMENT_STATS_ENABLED on the server.
 
         Returns {"items": [...], "next_cursor"?: str}. Keyset paginated by
         contact_id.
@@ -360,7 +360,7 @@ class Minigun:
     ) -> dict:
         """One page of the per-URL click rollup for a send (one row per
         contact + clicked link: canonical url, first/last click, click
-        count). Requires EVENTS_ARCHIVE_ENABLED on the server. Use to
+        count). Requires ENGAGEMENT_STATS_ENABLED on the server. Use to
         segment an audience by what they clicked.
 
         Returns {"items": [...], "next_cursor"?: str}. Keyset paginated

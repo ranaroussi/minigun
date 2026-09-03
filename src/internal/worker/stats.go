@@ -16,9 +16,11 @@ var statsPollOffsets = []time.Duration{
 	120 * time.Hour,
 }
 
-// nextStatsFetch returns the next time we should poll Mailgun for a send's
-// stats, or (zero, true) if all six offsets have already elapsed.
-func nextStatsFetch(completedAt time.Time, now time.Time) (time.Time, bool) {
+// NextStatsFetch returns the next time we should poll Mailgun for a send's
+// stats, or (zero, true) if all six offsets have already elapsed. Exported
+// so the API's force-refresh path can advance the same schedule the cron
+// uses when it persists a forced fetch.
+func NextStatsFetch(completedAt time.Time, now time.Time) (time.Time, bool) {
 	elapsed := now.Sub(completedAt)
 	for _, off := range statsPollOffsets {
 		if off > elapsed {
@@ -71,7 +73,7 @@ func (m *Manager) refreshOneSendStats(ctx context.Context, sendID string, comple
 		return err
 	}
 	now := time.Now()
-	nextFetch, isFinal := nextStatsFetch(completedAt, now)
+	nextFetch, isFinal := NextStatsFetch(completedAt, now)
 
 	totals, mgErr := m.mailgun.PerSendMetrics(ctx, snd.ID, snd.CreatedAt)
 	if mgErr != nil {

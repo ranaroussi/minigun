@@ -8,7 +8,8 @@ workers_dev = false
 # Bind the worker to the custom subdomain mailer.misc.sh on the misc.sh zone.
 # Cloudflare auto-provisions the DNS record because custom_domain = true.
 routes = [
-  { pattern = "mailer.misc.sh", custom_domain = true }
+  { pattern = "mailer.misc.sh", custom_domain = true },
+  { pattern = "geo.misc.sh", custom_domain = true }
 ]
 
 # Public origin used to build per-recipient unsubscribe and manage URLs.
@@ -17,12 +18,28 @@ MINIGUN_PUBLIC_URL = "https://mailer.misc.sh"
 MAILGUN_REGION = "us"
 # Where to 302-redirect visitors who load GET / in a browser. Leave unset for a plain 404.
 REDIRECT_URL = "https://varops.com"
+# Gates engagement retrieval: the events-pull cron that folds Mailgun events
+# into the per-recipient rollups. Retrieval only — acting on the data
+# (pruning) is the separate LIST_HYGIENE_AUTO_PRUNE_ENABLED flag.
+# Safe to keep on: pullDueSendEvents now pauses itself while any send is in
+# flight (see src/send/events_pull.ts hasActiveSend guard), so the per-tick
+# pull can no longer starve the send watchdog's CPU budget mid-send.
+ENGAGEMENT_STATS_ENABLED = "true"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "minigun"
 database_id = "a49bd078-d9ea-43bb-9b65-bbf5dea16412"
 migrations_dir = "migrations"
+
+# Service binding to this same Worker. The batch-send chain (scheduleNextStep
+# + cron sweeps) invokes /send/:id/next through env.SELF, which re-enters the
+# Worker directly. A plain fetch() to the Worker's own public route
+# (mailer.misc.sh) is not routed back into the Worker, which silently stalled
+# every multi-batch send after batch 0. See src/env.ts (selfCall).
+[[services]]
+binding = "SELF"
+service = "minigun"
 
 # Cron Trigger fires every minute to sweep for bulk sends stuck in `running`
 # for > 2 minutes and nudges them back into the self-call step loop.

@@ -1,8 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import { ARCHIVE_MAX_AGE_MS, nextDueAt } from '../src/send/events_pull';
+import { listDueEventPulls } from '../src/store/events';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
+
+function dbCapturingAll() {
+  const captured: { sql: string } = { sql: '' };
+  const prepared: any = {
+    bind: () => prepared,
+    all: async () => ({ results: [] }),
+  };
+  const db: any = {
+    prepare: (sql: string) => {
+      captured.sql = sql;
+      return prepared;
+    },
+  };
+  return { db: db as D1Database, captured };
+}
+
+describe('listDueEventPulls', () => {
+  it('restricts candidates to bulk sends so singles are never polled', async () => {
+    const { db, captured } = dbCapturingAll();
+    await listDueEventPulls(db, Date.now(), ARCHIVE_MAX_AGE_MS, 20);
+    expect(captured.sql).toContain("type = 'bulk'");
+  });
+});
 
 describe('nextDueAt', () => {
   const created = 1_700_000_000_000;

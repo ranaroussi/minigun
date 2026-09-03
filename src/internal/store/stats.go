@@ -163,15 +163,22 @@ func (s *Store) ListDueSendStats(ctx context.Context, limit int) ([]DueStatsRow,
 	if limit <= 0 {
 		limit = 50
 	}
+	// next_fetch_at is written in two formats: ApplyMailgunStats stores
+	// RFC3339Nano ("2026-06-05T12:09:15.905Z") while MarkSendCompletedForStats
+	// stores SQLite's datetime() ("2026-06-05 12:09:15"). A raw string "<="
+	// compares the 'T' separator (0x54) against ' ' (0x20), so an RFC3339
+	// timestamp always sorts AFTER a same-day SQLite "now" and the row never
+	// reads as due until the next calendar day. Normalize both sides through
+	// datetime() so the comparison is chronological.
 	rows, err := s.DB.QueryContext(ctx, `
 		SELECT s.id, s.created_at, s.completed_at
 		FROM send_stats ss
 		JOIN sends s ON s.id = ss.send_id
 		WHERE ss.is_final = 0
 		  AND ss.next_fetch_at IS NOT NULL
-		  AND ss.next_fetch_at <= datetime('now')
+		  AND datetime(ss.next_fetch_at) <= datetime('now')
 		  AND s.completed_at IS NOT NULL
-		ORDER BY ss.next_fetch_at ASC
+		ORDER BY datetime(ss.next_fetch_at) ASC
 		LIMIT ?`, limit,
 	)
 	if err != nil {

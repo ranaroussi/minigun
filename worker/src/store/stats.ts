@@ -59,12 +59,19 @@ export function markSendCompletedForStatsStmt(
   db: D1Database,
   sendID: string,
 ): D1PreparedStatement {
+  // next_fetch_at must be written in the SAME format everywhere (JS ISO-8601,
+  // e.g. "2026-06-05T12:09:15.905Z") so listDueSendStats can compare it as a
+  // raw string and drive off idx_send_stats_due. Previously this used
+  // datetime('now') (SQLite's " " separator), which forced a datetime()
+  // wrapper in the due query, made the index non-sargable, and regressed the
+  // plan to a full sends scan (~9k rows/tick).
+  const now = nowISO();
   return db
     .prepare(
-      `UPDATE send_stats SET next_fetch_at = datetime('now'), updated_at = datetime('now')
+      `UPDATE send_stats SET next_fetch_at = ?, updated_at = ?
          WHERE send_id = ? AND next_fetch_at IS NULL AND is_final = 0`,
     )
-    .bind(sendID);
+    .bind(now, now, sendID);
 }
 
 export function incrementSendStatsUnsubscribedStmt(
@@ -158,17 +165,35 @@ export async function listDueSendStats(
 ): Promise<DueStatsRow[]> {
   const { results } = await db
     .prepare(
+      // Shape matters more than it looks. Two constraints, both learned the
+      // hard way after this query burned 27M rows/day (the entire D1 daily
+      // read allowance) by full-scanning sends every tick:
+      //
+      //  1. next_fetch_at is written in ONE format everywhere (JS ISO-8601 via
+      //     nowISO), so a raw lexical "<=" is exactly chronological and keeps
+      //     idx_send_stats_due sargable. The old datetime()-wrapped compare was
+      //     non-sargable. Migration 0015 backfills legacy SQLite-format rows.
+      //  2. The due set is resolved in a LIMITed subquery over send_stats
+      //     ALONE. SQLite cannot flatten a subquery that has LIMIT, so it must
+      //     materialise <=limit rows first and can never choose sends as the
+      //     driving table. Do NOT rewrite this as a flat two-table join: D1
+      //     does not honour ANALYZE statistics, so a flat join is free to pick
+      //     the catastrophic plan and there is no way to talk it out of it.
       `SELECT s.id AS send_id, s.created_at, s.completed_at
-         FROM send_stats ss
-         JOIN sends s ON s.id = ss.send_id
-        WHERE ss.is_final = 0
-          AND ss.next_fetch_at IS NOT NULL
-          AND ss.next_fetch_at <= datetime('now')
-          AND s.completed_at IS NOT NULL
-        ORDER BY ss.next_fetch_at ASC
-        LIMIT ?`,
+         FROM (
+           SELECT send_id, next_fetch_at
+             FROM send_stats
+            WHERE is_final = 0
+              AND next_fetch_at IS NOT NULL
+              AND next_fetch_at <= ?
+            ORDER BY next_fetch_at ASC
+            LIMIT ?
+         ) due
+         JOIN sends s ON s.id = due.send_id
+        WHERE s.completed_at IS NOT NULL
+        ORDER BY due.next_fetch_at ASC`,
     )
-    .bind(limit > 0 ? limit : 25)
+    .bind(nowISO(), limit > 0 ? limit : 25)
     .all<DueStatsRow>();
   return results;
 }

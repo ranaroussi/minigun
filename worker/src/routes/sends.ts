@@ -15,8 +15,9 @@ import { sendProgress } from '../store/batches';
 import { resolveCompany } from '../store/companies';
 import { upsertContact } from '../store/contacts';
 import { resolveList } from '../store/lists';
+import { nextStatsFetch } from '../send/stats';
 import { cancelScheduledSend, createSend, getSend, listSends } from '../store/sends';
-import { getSendStats } from '../store/stats';
+import { applyMailgunStats, getSendStats } from '../store/stats';
 import {
   countSubscribed,
   maxSubscriptionID,
@@ -28,6 +29,19 @@ import { countUnsubscribesForSend } from '../store/unsubs';
 function emptyToNull(s: string | undefined | null): string | null {
   if (!s || !s.trim()) return null;
   return s;
+}
+
+function isTruthyParam(v: string | undefined | null): boolean {
+  if (!v) return false;
+  switch (v.trim().toLowerCase()) {
+    case '1':
+    case 'true':
+    case 'yes':
+    case 'on':
+      return true;
+    default:
+      return false;
+  }
 }
 
 // Returns an error message when send_at is present but unparseable, else null
@@ -166,26 +180,15 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         202,
       );
     }
-    // Run the first batch inline rather than self-fetching /send/:id/next.
-    // The fire-and-forget kick was unreliable on this worker (waitUntil could
-    // drop the in-flight subrequest before it landed), leaving sends stuck in
-    // 'queued' until the cron sweep picked them up. Executing step() here
-    // guarantees the chain has actually started before we return 202.
-    // Subsequent batches still ride the scheduleNextStep self-fetch chain;
-    // the cron sweep is the safety net if that drops.
-    let respStatus: typeof snd.status = snd.status;
-    try {
-      const result = await step(c.env, snd.id);
-      if (result.state === 'sent') {
-        respStatus = 'running';
-        scheduleNextStep(c.env, c.executionCtx, snd.id, snd.throttle_ms);
-      } else if (result.state === 'completed') {
-        respStatus = 'completed';
-      }
-    } catch (err) {
-      console.error('initial step failed', snd.id, err);
-    }
-    return c.json({ send_id: snd.id, status: respStatus, total_recipients: total }, 202);
+    // Kick the first batch on the self-call chain instead of running step()
+    // inline. Doing the recipient build, token signing, and Mailgun call
+    // inside this request made it the heaviest invocation in the worker and
+    // pushed borderline creations past the resource limit (Cloudflare 1102).
+    // Deferring keeps the creation request light: step() runs in its own
+    // invocation via the chain, and the every-minute cron watchdog is the
+    // safety net that starts (or reclaims) the send if the kick is dropped.
+    scheduleNextStep(c.env, c.executionCtx, snd.id, 0);
+    return c.json({ send_id: snd.id, status: snd.status, total_recipients: total }, 202);
   });
 
   app.post('/send/single', async (c) => {
@@ -335,8 +338,19 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         ? Math.ceil(snd.total_recipients / snd.batch_size)
         : 0;
     const remaining = Math.max(0, snd.total_recipients - sent);
+    let listSlug = '';
+    if (snd.list_id) {
+      try {
+        listSlug = (await resolveList(c.env.DB, snd.list_id)).slug;
+      } catch {
+        listSlug = '';
+      }
+    }
     return c.json({
       id: snd.id,
+      subject: snd.subject,
+      list_id: snd.list_id ?? '',
+      list_slug: listSlug,
       status: snd.status,
       progress: {
         completed_batches: completed,
@@ -363,7 +377,73 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       throw err;
     }
 
+    // Resolve the target list once so every response branch can name it.
+    // Single/transactional sends carry no list; a deleted list leaves blanks.
+    let listSlug = '';
+    let listName = '';
+    if (snd.list_id) {
+      try {
+        const l = await resolveList(c.env.DB, snd.list_id);
+        listSlug = l.slug;
+        listName = l.name;
+      } catch {
+        // list gone; leave the names blank rather than failing the stats read
+      }
+    }
+    const listInfo = {
+      list_id: snd.list_id ?? '',
+      list_slug: listSlug,
+      list_name: listName,
+    };
+
+    // Force path: bypass the cache and the next_fetch_at schedule, pull
+    // fresh numbers from Mailgun right now. When the send has completed we
+    // also persist them (advancing the same schedule the cron uses) so the
+    // refreshed snapshot sticks; while still running we just return live.
+    const force = isTruthyParam(c.req.query('force'));
+
     const st = await getSendStats(c.env.DB, id);
+    if (force) {
+      let totals: PerSendTotals;
+      try {
+        totals = await perSendMetrics(c.env, snd.id, new Date(snd.created_at));
+      } catch (err) {
+        console.warn('mailgun metrics failed (force)', snd.id, err);
+        return c.json({ error: 'mailgun fetch failed' }, 502);
+      }
+      if (snd.completed_at) {
+        const { next, isFinal } = nextStatsFetch(new Date(snd.completed_at), new Date());
+        await applyMailgunStats(c.env.DB, snd.id, {
+          sent: totals.sent,
+          delivered: totals.delivered,
+          opened: totals.opened,
+          clicked: totals.clicked,
+          failed: totals.failed,
+          complained: totals.complained,
+          next_fetch_at: next?.toISOString() ?? null,
+          is_final: isFinal,
+          fetch_error: null,
+        });
+      }
+      const refreshed = await getSendStats(c.env.DB, id);
+      const unsub = refreshed
+        ? refreshed.unsubscribed
+        : await countUnsubscribesForSend(c.env.DB, id);
+      return c.json({
+        id: snd.id,
+        sent: totals.sent,
+        delivered: totals.delivered,
+        opened: totals.opened,
+        clicked: totals.clicked,
+        failed: totals.failed,
+        complained: totals.complained,
+        unsubscribed: unsub,
+        is_final: false,
+        ...listInfo,
+        source: 'mailgun_forced',
+      });
+    }
+
     if (st && (st.is_final || st.last_fetched_at)) {
       return c.json({
         id: snd.id,
@@ -376,6 +456,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
         unsubscribed: st.unsubscribed,
         is_final: st.is_final,
         last_fetched_at: st.last_fetched_at,
+        ...listInfo,
         source: 'send_stats',
       });
     }
@@ -404,6 +485,7 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       complained: totals.complained,
       unsubscribed: unsub,
       is_final: false,
+      ...listInfo,
       source: 'mailgun_live',
     });
   });
@@ -416,11 +498,25 @@ export function mountSends(app: Hono<{ Bindings: Env }>) {
       return c.json({ error: 'invalid cursor' }, 400);
     }
     const limit = clampLimit(Number(c.req.query('limit') ?? '0'));
+    // Optional list filter accepts a slug or an id, mirroring other :list
+    // routes. An unknown list is a 404 so callers can tell "no such list"
+    // apart from "list exists but has no sends" (an empty items array).
+    let listID = '';
+    const listKey = c.req.query('list');
+    if (listKey && listKey.trim()) {
+      try {
+        listID = (await resolveList(c.env.DB, listKey.trim())).id;
+      } catch (err) {
+        if (err instanceof NotFoundError) return c.json({ error: 'list not found' }, 404);
+        throw err;
+      }
+    }
     const items = await listSends(
       c.env.DB,
       cursor.afterCreated ?? '',
       cursor.afterStringID ?? '',
       limit + 1,
+      listID,
     );
     const hasMore = items.length > limit;
     const trimmed = hasMore ? items.slice(0, limit) : items;

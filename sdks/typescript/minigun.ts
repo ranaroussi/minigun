@@ -370,7 +370,7 @@ export class Minigun {
   /** One page of per-recipient message engagement for a send (one row
    * per contact: sent/delivered timestamps, first/last open + click with
    * counts, failure/complaint/unsubscribe state). Keyset-paginated by
-   * contact_id. Requires EVENTS_ARCHIVE_ENABLED on the server. */
+   * contact_id. Requires ENGAGEMENT_STATS_ENABLED on the server. */
   listSendRecipients(
     sendId: string,
     opts: {
@@ -388,7 +388,7 @@ export class Minigun {
   /** One page of the per-URL click rollup for a send (one row per
    * contact + clicked link: canonical url, first/last click, click
    * count). Keyset-paginated over (contact_id, url). Requires
-   * EVENTS_ARCHIVE_ENABLED on the server. Use to segment an audience by
+   * ENGAGEMENT_STATS_ENABLED on the server. Use to segment an audience by
    * what they clicked. */
   listSendClicks(
     sendId: string,

@@ -245,7 +245,7 @@ The single biggest reason newsletter senders trash their reputation is mailing a
 
 ### Engagement rollups & segmentation
 
-With `EVENTS_ARCHIVE_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule for 30 days and folds each event into bounded rollups — **no raw per-event log**:
+With `ENGAGEMENT_STATS_ENABLED=true`, MiniGun pulls Mailgun's events API on a burst-then-daily schedule for 30 days and folds each event into bounded rollups — **no raw per-event log**:
 
 - **`contact_message_engagement`** — per-`(send, contact)`: sent/delivered, first/last open + click with counts, failure/complaint/unsubscribe state.
 - **`contact_engagement`** — per-`(contact, list)` lifetime summary that powers prune-by-engagement.
@@ -323,9 +323,9 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | POST   | `/send/{id}/cancel`                        | Unschedule a `scheduled`/`queued` send (→ `cancelled`). `409` once running or terminal. |
 | GET    | `/send/{id}`                               | Send status + progress. |
 | GET    | `/send/{id}/stats`                         | Aggregate stats (DB-backed; falls back to live Mailgun for fresh sends). |
-| GET    | `/send/{id}/recipients?limit=&cursor=` | Per-recipient message engagement rollup for a send (one row per contact; keyset-paginated by `contact_id`). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
-| GET    | `/send/{id}/clicks?limit=&cursor=`         | Per-URL click rollup for a send (one row per contact + clicked link). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
-| GET    | `/contacts/{idOrEmail}/engagement?list_id=` | Contact's per-list lifetime engagement summary (totals + last open/click + dormancy counter). Requires `EVENTS_ARCHIVE_ENABLED=true`. |
+| GET    | `/send/{id}/recipients?limit=&cursor=` | Per-recipient message engagement rollup for a send (one row per contact; keyset-paginated by `contact_id`). Requires `ENGAGEMENT_STATS_ENABLED=true`. |
+| GET    | `/send/{id}/clicks?limit=&cursor=`         | Per-URL click rollup for a send (one row per contact + clicked link). Requires `ENGAGEMENT_STATS_ENABLED=true`. |
+| GET    | `/contacts/{idOrEmail}/engagement?list_id=` | Contact's per-list lifetime engagement summary (totals + last open/click + dormancy counter). Requires `ENGAGEMENT_STATS_ENABLED=true`. |
 | POST   | `/lists/{list}/prune`                      | Engagement-based prune. Body accepts `min_messages_since_engagement`, `dormant_for_days`, `no_delivery_for_days`, `dry_run` (default true), `limit`, `sample_size`. |
 | GET    | `/u/{token}`                               | Render the unsubscribe confirmation page. |
 | POST   | `/u/{token}`                               | Perform the unsubscribe (form post or RFC 8058 one-click). |
@@ -350,7 +350,7 @@ The server speaks JSON over HTTP on `:8080`. When `MINIGUN_API_TOKEN` is set, al
 | `MINIGUN_TURNSTILE_SITE_KEY`   | no       | —                        | Cloudflare Turnstile site key. |
 | `MINIGUN_TURNSTILE_SECRET_KEY` | no       | —                        | Turnstile secret. Required when site key is set. |
 | `MAILGUN_WEBHOOK_SIGNING_KEY`  | no       | —                        | Mailgun "HTTP webhook signing key" (Sending → Webhooks). When set, `/webhooks/mailgun` accepts signed bounce/complaint events and auto-purges contacts. When unset, the endpoint refuses all requests. |
-| `EVENTS_ARCHIVE_ENABLED`       | no       | `false`                  | Activates the Mailgun events archive pull cron + the read surface (`/send/{id}/recipients`, `/send/{id}/clicks`, `/contacts/{id}/engagement`). Schema and send-path tagging ship dormant; flip to `true` whenever you're ready to start collecting. See [docs/events-archive.md](./docs/events-archive.md). |
+| `ENGAGEMENT_STATS_ENABLED`       | no       | `false`                  | Gates **engagement retrieval**: the events-pull cron that folds Mailgun events into the per-recipient rollups behind the read surface (`/send/{id}/recipients`, `/send/{id}/clicks`, `/contacts/{id}/engagement`). Retrieval only — *acting* on the data (pruning) is the separate `LIST_HYGIENE_AUTO_PRUNE_ENABLED`. Schema and send-path tagging ship dormant; flip to `true` to start collecting. Deprecated alias: `EVENTS_ARCHIVE_ENABLED`. See [docs/events-archive.md](./docs/events-archive.md). |
 | `LIST_HYGIENE_AUTO_PRUNE_ENABLED` | no    | `false`                  | When `true`, the engagement-based prune executor runs once per day against every list. Manual `POST /lists/{list}/prune` works independently. See [docs/list-hygiene.md](./docs/list-hygiene.md). |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_COUNT` | no   | `20`                     | Auto-prune contacts whose `messages_since_last_engagement >= N`. Set to `0` to disable this criterion in the cron. |
 | `LIST_HYGIENE_AUTO_PRUNE_BY_RECENCY_DAYS` | no | `180`              | Auto-prune contacts whose last open/click is older than N days. Set to `0` to disable. |

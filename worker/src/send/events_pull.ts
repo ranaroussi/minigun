@@ -1,17 +1,19 @@
-import { Env, eventsArchiveEnabled } from '../env';
+import { Env, engagementStatsEnabled } from '../env';
 import { fetchEvents, MailgunAPIError } from '../lib/mailgun';
 import {
   DueEventPullRow,
-  applyClickToURL,
-  applyEventToEngagement,
-  applyEventToMessageEngagement,
+  checkpointEventPullThrough,
+  clickStmt,
+  engagementStmt,
   getSendListID,
   listDueEventPulls,
-  lookupContactIDByEmail,
+  lookupContactIDsByEmails,
+  messageEngagementStmt,
   normalizeEvent,
   recordEventPullError,
   recordEventPullProgress,
 } from '../store/events';
+import { hasActiveSend } from '../store/sends';
 
 // ---------------------------------------------------------------------------
 // Schedule
@@ -31,14 +33,29 @@ const DAILY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 // Total archive window, anchored to send.created_at. After this elapses
 // the send is frozen — no more polls, no more reads against Mailgun.
-// 30 days matches Mailgun's paid-tier retention; beyond it there's
-// nothing pullable that we haven't already seen.
-export const ARCHIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// 14 days: opens/clicks are overwhelmingly front-loaded (first few days),
+// so the second half of Mailgun's 30-day retention folds almost nothing
+// while keeping the send in the daily-pull candidate set and writing a
+// checkpoint each beat. Freezing at 14d trims that write/read tail with
+// negligible engagement loss. Raise back toward 30d if long-tail opens
+// ever matter more than the D1 budget.
+export const ARCHIVE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
-// Hard cap on pages fetched per send per beat. Prevents one cron tick
-// from saturating the worker after a long Mailgun outage (300 events/page
-// × 50 pages = 15k events max per send per beat).
-const MAX_PAGES_PER_SEND = 50;
+// Hard cap on pages fetched per send per beat. Each page is one Mailgun
+// fetch + one batched contact lookup + chunked D1 write batches, so this
+// bounds the CPU/subrequest budget a single cron tick spends on one send
+// (300 events/page × 16 pages = 4.8k events/beat). A send with a larger
+// backlog is drained across consecutive cron ticks: while capped, the
+// beat checkpoints its watermark WITHOUT bumping events_pulls_count, so
+// nextDueAt keeps it immediately due until it catches up. The per-page
+// checkpoint means a CPU-killed beat still keeps the pages it finished —
+// only the dense same-second delivery burst right after a send risks
+// hitting the limit at this cap, and that section is idempotent.
+const MAX_PAGES_PER_BEAT = 16;
+
+// Max statements per D1 batch() call. A page of 300 events can emit up to
+// ~3 writes each; we flush in chunks so no single batch is oversized.
+const BATCH_CHUNK = 90;
 
 // Returns the timestamp of the next scheduled pull beat for `send`, or
 // null if the send is past the archive window (caller should freeze).
@@ -74,9 +91,21 @@ export function nextDueAt(row: {
 // ---------------------------------------------------------------------------
 
 // Cron entrypoint. Called from the worker's scheduled handler. No-ops
-// when EVENTS_ARCHIVE_ENABLED is unset (Phase 2+ feature flag).
+// when ENGAGEMENT_STATS_ENABLED is unset (engagement retrieval feature flag).
 export async function pullDueSendEvents(env: Env, limit = 20): Promise<void> {
-  if (!eventsArchiveEnabled(env)) return;
+  if (!engagementStatsEnabled(env)) return;
+  // Pause retrieval while a send is in flight. The events-pull can burn the
+  // whole scheduled-handler CPU budget folding the dense delivery burst of a
+  // large send, which starves sweepStuckSends and wedges the very send that
+  // is generating those events. Deferring the pull by a tick (or a few, for
+  // long sends) is harmless — the burst/daily schedule is anchored to
+  // created_at and stays "due" until it runs, so nothing is dropped.
+  try {
+    if (await hasActiveSend(env.DB)) return;
+  } catch (err) {
+    console.error('events-pull: active-send check', err);
+    return;
+  }
   const now = Date.now();
   let candidates: DueEventPullRow[];
   try {
@@ -163,16 +192,13 @@ export async function pullEventsForOneSend(
   let inserted = 0;
   let pages = 0;
   let pageURL: string | undefined;
-  // Highest event timestamp processed in this batch — the next pull
-  // resumes strictly after it. When MAX_PAGES_PER_SEND caps the loop with
-  // pages remaining we still advance to lastEventTs (forward progress).
-  let lastEventTs = 0;
+  // Highest event timestamp durably checkpointed so far. The next pull
+  // resumes strictly after it. Advanced per-page (not just at the end) so
+  // a CPU-killed beat still makes forward progress.
+  let lastEventTs = lastThroughOnEntry(send);
   let cappedWithMorePages = false;
-  // Memoize email→contact_id within this send so a recipient with many
-  // events triggers one lookup, not one per event.
-  const contactCache = new Map<string, string | null>();
 
-  while (pages < MAX_PAGES_PER_SEND) {
+  while (pages < MAX_PAGES_PER_BEAT) {
     const page = pageURL
       ? await fetchEvents(env, { pageURL })
       : await fetchEvents(env, {
@@ -186,23 +212,30 @@ export async function pullEventsForOneSend(
 
     if (!page.items || page.items.length === 0) break;
 
-    for (const raw of page.items) {
-      const ev = normalizeEvent(raw);
-      if (!ev) continue;
-      if (ev.event_timestamp_ms > lastEventTs) lastEventTs = ev.event_timestamp_ms;
+    // Normalize the page, then resolve every recipient in ONE read
+    // instead of a serial lookup per event (the dominant CPU cost on
+    // large sends).
+    const events = page.items
+      .map(normalizeEvent)
+      .filter((e): e is NonNullable<typeof e> => e !== null);
+    const contactByEmail = await lookupContactIDsByEmails(
+      env.DB,
+      events.map((e) => e.recipient),
+    );
 
-      let contactID = contactCache.get(ev.recipient);
-      if (contactID === undefined) {
-        contactID = await lookupContactIDByEmail(env.DB, ev.recipient);
-        contactCache.set(ev.recipient, contactID);
-      }
-      if (contactID === null) continue; // event for an unknown address
+    // Build all writes for this page, then flush them in ordered batches.
+    // Order is preserved across chunks so the non-idempotent counter
+    // UPSERTs (total_opens + 1, ...) accumulate correctly.
+    const stmts: D1PreparedStatement[] = [];
+    let pageMaxTs = 0;
+    for (const ev of events) {
+      if (ev.event_timestamp_ms > pageMaxTs) pageMaxTs = ev.event_timestamp_ms;
+      const contactID = contactByEmail.get(ev.recipient);
+      if (!contactID) continue; // event for an unknown address
 
       inserted++;
-      // Fold into both engagement tiers. cme (per-send, per-contact
-      // detail) covers more event types than the per-list rollup.
       if (isMessageEvent(ev.event)) {
-        await applyEventToMessageEngagement(
+        const s = messageEngagementStmt(
           env.DB,
           send.send_id,
           contactID,
@@ -212,20 +245,14 @@ export async function pullEventsForOneSend(
           ev.severity,
           ev.reason,
         );
+        if (s) stmts.push(s);
       }
       if (listID !== null && isEngagementEvent(ev.event)) {
-        await applyEventToEngagement(
-          env.DB,
-          contactID,
-          listID,
-          ev.event,
-          ev.event_timestamp_ms,
-        );
+        const s = engagementStmt(env.DB, contactID, listID, ev.event, ev.event_timestamp_ms);
+        if (s) stmts.push(s);
       }
-      // Per-URL click rollup (segmentation). Only "clicked" events carry
-      // a URL; an empty one is a no-op inside applyClickToURL.
       if (ev.event === 'clicked' && ev.url) {
-        await applyClickToURL(
+        const s = clickStmt(
           env.DB,
           send.send_id,
           contactID,
@@ -233,7 +260,24 @@ export async function pullEventsForOneSend(
           ev.url,
           Math.floor(ev.event_timestamp_ms / 1000),
         );
+        if (s) stmts.push(s);
       }
+    }
+
+    for (let i = 0; i < stmts.length; i += BATCH_CHUNK) {
+      await env.DB.batch(stmts.slice(i, i + BATCH_CHUNK));
+    }
+
+    // Durable per-page checkpoint: advance the watermark to this page's
+    // max event timestamp WITHOUT bumping events_pulls_count, so a beat
+    // that dies on the next page resumes after this one.
+    if (pageMaxTs > lastEventTs) {
+      lastEventTs = pageMaxTs;
+      await checkpointEventPullThrough(env.DB, send.send_id, {
+        last_pulled_through_ms: lastEventTs,
+        inserted,
+      });
+      inserted = 0; // already folded into events_archive_count above
     }
 
     // Follow Mailgun's pagination cursor. When items is empty OR the
@@ -241,32 +285,41 @@ export async function pullEventsForOneSend(
     const next = page.paging?.next;
     if (!next || next === pageURL) break;
     pageURL = next;
-    if (pages >= MAX_PAGES_PER_SEND) {
-      // Exiting with an outstanding next page — don't freeze even if
-      // we're past the window; the next beat continues paging.
+    if (pages >= MAX_PAGES_PER_BEAT) {
+      // Exiting with an outstanding next page — this scheduled pull
+      // hasn't caught up. Don't bump the burst counter; the next cron
+      // tick continues paging from the checkpointed watermark.
       cappedWithMorePages = true;
     }
   }
 
-  // Watermark advance: to lastEventTs when we processed anything,
-  // otherwise hold at beginMs-1 (the through-point already covered) so an
-  // empty window doesn't skip the lower bound forward past unseen events.
-  let newThroughMs = beginMs - 1;
-  if (lastEventTs > 0) {
-    newThroughMs = lastEventTs;
+  // While still draining a backlog (capped with more pages), the per-page
+  // checkpoint already persisted forward progress and we deliberately do
+  // NOT advance the burst schedule. Only when this scheduled pull has
+  // caught up do we bump events_pulls_count and (if past the window)
+  // freeze the send.
+  if (!cappedWithMorePages) {
+    const newThroughMs = lastEventTs > 0 ? lastEventTs : beginMs - 1;
+    const frozen = nowMs >= send.created_at_ms + ARCHIVE_MAX_AGE_MS;
+    await recordEventPullProgress(env.DB, send.send_id, {
+      last_pulled_at_ms: nowMs,
+      last_pulled_through_ms: newThroughMs,
+      inserted,
+      freeze: frozen,
+    });
+    return { inserted, pages, frozen };
   }
 
-  const frozen =
-    !cappedWithMorePages && nowMs >= send.created_at_ms + ARCHIVE_MAX_AGE_MS;
+  return { inserted, pages, frozen: false };
+}
 
-  await recordEventPullProgress(env.DB, send.send_id, {
-    last_pulled_at_ms: nowMs,
-    last_pulled_through_ms: newThroughMs,
-    inserted,
-    freeze: frozen,
-  });
-
-  return { inserted, pages, frozen };
+// The watermark already covered on entry — events strictly after it are
+// what this beat fetches. Used to seed lastEventTs so an empty/no-new
+// page doesn't rewind the checkpoint.
+function lastThroughOnEntry(send: DueEventPullRow): number {
+  return send.events_last_pulled_through_ms !== null
+    ? send.events_last_pulled_through_ms
+    : 0;
 }
 
 // isEngagementEvent reports whether the event type drives an update to

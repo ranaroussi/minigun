@@ -84,42 +84,67 @@ type ContactEngagement struct {
 // ---------------------------------------------------------------------------
 
 // ListDueEventPulls returns sends that are candidates for the events-pull
-// cron — i.e., non-frozen, non-test sends with a sending_domain. The
-// burst-vs-daily schedule logic and the past-the-window freeze decision
-// are computed in the worker layer (see worker/events_pull.go nextDueAt);
-// the SQL just narrows candidates so the downstream filter has a small
-// set to look at.
+// cron — i.e., non-frozen, non-test sends with a sending_domain that are
+// DUE right now. The due predicate mirrors NextEventPullDueAt in
+// worker/events_pull.go exactly (the worker layer re-checks it as a
+// safety net):
 //
-// Intentionally does NOT filter by age — sends past ArchiveMaxAgeMS still
-// need one final pull so the worker layer can set events_archive_complete=1
-// and freeze them. Filtering on age in SQL (Phase 2 bug) left aged-out
-// sends in events_archive_complete=0 forever and silently dropped any
-// tail events from the final window.
+//   - Burst phase (events_pulls_count < 4): due when
+//     created_at + burstOffsetsMS[count] <= now. Offsets are
+//     [0, +1h, +6h, +24h] = [0, 3600000, 21600000, 86400000] ms.
+//   - Daily phase (count >= 4): due when last_pulled + 24h <= now, OR when
+//     the next daily beat would fall past the archive window
+//     (last_pulled + 24h > created + maxAge) — that send still needs one
+//     final pull to set events_archive_complete=1 and freeze.
 //
-// nowMs is accepted for signature compatibility with callers that still
-// pass it. maxAgeMs is unused.
+// Filtering due-ness HERE rather than after the LIMIT is critical: the
+// queue is ordered by events_last_pulled_at_ms ASC, so a large backlog of
+// not-yet-due daily sends (all pulled within the last day) would otherwise
+// fill the LIMIT window every tick and starve a fresh send waiting on its
+// +1h/+6h burst beat (it sorts behind them because it was pulled more
+// recently). Intentionally does NOT exclude sends past the age window —
+// they need that final freeze pull.
 func (s *Store) ListDueEventPulls(ctx context.Context, nowMs int64, maxAgeMs int64, limit int) ([]DueEventPullRow, error) {
-	_ = nowMs
-	_ = maxAgeMs
 	if limit <= 0 {
 		limit = 25
 	}
+	const dailyMS = int64(24 * 60 * 60 * 1000)
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT
-		  id,
-		  sending_domain,
-		  CAST(strftime('%s', created_at) AS INTEGER) * 1000,
-		  events_pulls_count,
-		  events_last_pulled_at_ms,
-		  events_last_pulled_through_ms
-		FROM sends
-		WHERE events_archive_complete = 0
-		  AND test_mode = 0
-		  AND status IN ('completed', 'failed', 'cancelled', 'running')
-		  AND sending_domain != ''
+		WITH candidates AS (
+		  SELECT
+		    id,
+		    sending_domain,
+		    CAST(strftime('%s', created_at) AS INTEGER) * 1000 AS created_at_ms,
+		    events_pulls_count,
+		    events_last_pulled_at_ms,
+		    events_last_pulled_through_ms
+		  FROM sends
+		  WHERE events_archive_complete = 0
+		    AND test_mode = 0
+		    AND status IN ('completed', 'failed', 'cancelled', 'running')
+		    AND sending_domain != ''
+		)
+		SELECT id, sending_domain, created_at_ms, events_pulls_count,
+		       events_last_pulled_at_ms, events_last_pulled_through_ms
+		FROM candidates
+		WHERE (
+		    events_pulls_count < 4
+		    AND created_at_ms + (CASE events_pulls_count
+		          WHEN 0 THEN 0
+		          WHEN 1 THEN 3600000
+		          WHEN 2 THEN 21600000
+		          ELSE 86400000 END) <= ?
+		  )
+		  OR (
+		    events_pulls_count >= 4
+		    AND (
+		          COALESCE(events_last_pulled_at_ms, 0) + ? <= ?
+		       OR COALESCE(events_last_pulled_at_ms, 0) + ? > created_at_ms + ?
+		    )
+		  )
 		ORDER BY COALESCE(events_last_pulled_at_ms, 0) ASC
 		LIMIT ?`,
-		limit,
+		nowMs, dailyMS, nowMs, dailyMS, maxAgeMs, limit,
 	)
 	if err != nil {
 		return nil, err
@@ -178,6 +203,34 @@ type EventPullProgress struct {
 	LastPulledThroughMs int64
 	Inserted            int64
 	Freeze              bool
+}
+
+// CheckpointEventPullThrough advances only the watermark for a multi-beat
+// pull that hasn't caught up yet. Unlike RecordEventPullProgress it does
+// NOT bump events_pulls_count (which tracks scheduled burst beats, not
+// loop iterations) and never freezes — it durably checkpoints forward
+// progress so a pull interrupted mid-backlog resumes after the last
+// fully-processed page instead of restarting.
+//
+// Deliberately leaves events_last_pulled_at_ms untouched: the due-set is
+// ordered by that column ASC, so advancing it mid-drain would push a
+// half-finished large send to the back of the queue behind never-pulled
+// sends, starving it. It stays put until the catch-up
+// RecordEventPullProgress stamps it.
+func (s *Store) CheckpointEventPullThrough(ctx context.Context, sendID string, args EventPullProgress) error {
+	_, err := s.DB.ExecContext(ctx, `
+		UPDATE sends SET
+		  events_last_pulled_through_ms = ?,
+		  events_archive_count          = events_archive_count + ?,
+		  events_last_pull_error        = NULL,
+		  updated_at                    = ?
+		WHERE id = ?`,
+		args.LastPulledThroughMs,
+		args.Inserted,
+		nowISO(),
+		sendID,
+	)
+	return err
 }
 
 // RecordEventPullError records a failure from a Mailgun pull. We don't

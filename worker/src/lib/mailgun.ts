@@ -136,7 +136,10 @@ export async function perSendMetrics(
     [
       'accepted_count',
       'delivered_count',
-      'failed_count',
+      // permanent_failed_count = unique hard bounces (the addresses actually
+      // removed). failed_count also folds in temporary_failed_count, i.e.
+      // every soft-bounce retry event, which wildly overcounts removals.
+      'permanent_failed_count',
       'opened_count',
       'clicked_count',
       'complained_count',
@@ -156,7 +159,7 @@ export async function perSendMetrics(
     totals.delivered += item.metrics['delivered_count'] ?? 0;
     totals.opened += item.metrics['opened_count'] ?? 0;
     totals.clicked += item.metrics['clicked_count'] ?? 0;
-    totals.failed += item.metrics['failed_count'] ?? 0;
+    totals.failed += item.metrics['permanent_failed_count'] ?? 0;
     totals.complained += item.metrics['complained_count'] ?? 0;
   }
   return totals;
@@ -239,8 +242,11 @@ export async function metrics(
   tag?: string,
 ): Promise<MetricsResponse> {
   const body: Record<string, unknown> = {
-    start: start.toISOString(),
-    end: end.toISOString(),
+    // Mailgun's analytics-metrics endpoint rejects ISO-8601; it wants an
+    // RFC 2822 / RFC 1123 date (e.g. "Mon, 02 Jun 2026 09:58:03 GMT"), which
+    // is exactly what Date.toUTCString() produces.
+    start: start.toUTCString(),
+    end: end.toUTCString(),
     resolution: 'day',
     metrics: metricsList,
   };

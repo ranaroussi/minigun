@@ -10,6 +10,7 @@ import { mountManage } from './routes/manage';
 import { mountSends } from './routes/sends';
 import { mountUnsubscribe } from './routes/unsubscribe';
 import { mountWebhooks } from './routes/webhooks';
+import { mountGeo } from './routes/geo';
 import { runAutoPruneOnce } from './send/auto_prune';
 import { dispatchDueSends, sweepStuckSends } from './send/cron';
 import { pullDueSendEvents } from './send/events_pull';
@@ -21,6 +22,11 @@ app.use('*', async (c, next) => {
   c.res.headers.set('x-powered-by', 'minigun-worker');
   await next();
 });
+
+// Unauthenticated endpoints — mount before bearerAuth.
+mountGeo(app);
+mountHealth(app);
+
 app.use('*', bearerAuth);
 
 app.get('/', (c) => {
@@ -29,7 +35,6 @@ app.get('/', (c) => {
   return c.json({ error: 'not found' }, 404);
 });
 
-mountHealth(app);
 mountCompanies(app);
 mountLists(app);
 mountContacts(app);
@@ -53,9 +58,9 @@ export default {
     // there are none (one indexed query); granularity is the cron tick.
     ctx.waitUntil(dispatchDueSends(env));
     ctx.waitUntil(refreshDueStats(env));
-    // pullDueSendEvents internally short-circuits when EVENTS_ARCHIVE_ENABLED
-    // is not "true", so this is a near-zero-cost noop until Phase 2 is
-    // activated by setting the flag.
+    // pullDueSendEvents internally short-circuits when ENGAGEMENT_STATS_ENABLED
+    // is not "true", so this is a near-zero-cost noop until engagement
+    // retrieval is activated by setting the flag.
     ctx.waitUntil(pullDueSendEvents(env));
     // runAutoPruneOnce no-ops when LIST_HYGIENE_AUTO_PRUNE_ENABLED is not
     // "true". The cron's tick rate is whatever the worker schedule is set
