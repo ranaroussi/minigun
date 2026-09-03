@@ -13,9 +13,21 @@
 --
 -- markSendCompletedForStats now writes ISO too, and listDueSendStats compares
 -- next_fetch_at as a raw string. This migration backfills the legacy
--- SQLite-format rows so all values are uniformly ISO, then ANALYZEs so the
--- planner drives off the selective partial index (range + ORDER BY + LIMIT,
--- ~25 rows/run) instead of scanning sends.
+-- SQLite-format rows so all values are uniformly ISO.
+--
+-- Note on ANALYZE: it is run below because it is cheap and harmless, but do NOT
+-- rely on it. Running it made EXPLAIN pick the right plan under `wrangler d1
+-- execute`, yet the deployed worker kept the 18k-row plan afterwards — D1 does
+-- not honour these statistics for the Worker's connections. The actual fix is
+-- structural: listDueSendStats resolves the due set in a LIMITed subquery over
+-- send_stats alone, which SQLite cannot flatten, so sends can never become the
+-- driving table (verified: 50 rows/run).
+--
+-- Correctness note: this backfill is cosmetic/consistency-only. Legacy
+-- space-separated values sort BEFORE ISO ones (' ' 0x20 < 'T' 0x54), so they
+-- simply always compare as due and self-heal the first time applyMailgunStats
+-- rewrites them. The backfill just stops them crowding the LIMIT window (and
+-- burning Mailgun calls) until then.
 
 UPDATE send_stats
    SET next_fetch_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_fetch_at)
