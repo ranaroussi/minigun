@@ -3,6 +3,38 @@
 All notable changes to the MiniGun Worker are documented here. Versions are
 tagged `worker/vX.Y.Z` and follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.10] - 2026-09-03
+
+### Fixed
+- `listDueSendStats` was reading **27M D1 rows/day** — the entire free-tier
+  daily allowance (5M) several times over — and hard-blocked the account's D1
+  reads two days running. `wrangler d1 insights` isolated it: 1,485 runs/day at
+  ~18,191 rows each, which is a full `SCAN sends` (~9.2K rows) plus a
+  `send_stats` lookup per row.
+
+  Two independent causes, both fixed:
+  - **Non-sargable compare.** `next_fetch_at` was written in two formats —
+    JS ISO-8601 (`applyMailgunStats`) and SQLite's `datetime('now')` space
+    separator (`markSendCompletedForStatsStmt`) — so the due query had to wrap
+    the column in `datetime()`. That made `idx_send_stats_due` unusable and the
+    planner fell back to driving off `sends`. It stayed latent until the
+    repaired signup pipeline grew `sends` enough to matter.
+    `markSendCompletedForStatsStmt` now binds `nowISO()`, and the due query
+    compares the raw string. Migration `0015_normalize_stats_next_fetch`
+    backfills legacy rows (they also self-heal on next fetch).
+  - **A flat join the planner was free to get wrong.** `ANALYZE send_stats`
+    fixed the plan when tested via `wrangler d1 execute`, but the deployed
+    worker kept the 18K-row plan afterwards: **D1 does not honour ANALYZE
+    statistics**, so a two-table join could always re-pick `sends` as the
+    driving table. The due set is now resolved in a `LIMIT`ed subquery over
+    `send_stats` alone. SQLite cannot flatten a subquery containing `LIMIT`, so
+    it must materialise ≤`limit` rows first and can never choose `sends` to
+    drive. The plan is now structural rather than statistics-dependent.
+
+  Verified live: `CO-ROUTINE due` → `SEARCH send_stats USING INDEX
+  idx_send_stats_due` → `SCAN due` → `SEARCH s USING sqlite_autoindex_sends_1`.
+  ~50 rows/run (~72K/day) versus 18,191 (~27M/day).
+
 ## [0.2.9] - 2026-08-25
 
 ### Performance

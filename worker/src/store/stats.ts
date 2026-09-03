@@ -165,23 +165,33 @@ export async function listDueSendStats(
 ): Promise<DueStatsRow[]> {
   const { results } = await db
     .prepare(
-      // next_fetch_at is now written in ONE format everywhere (JS ISO-8601 via
-      // nowISO / toISOString), so a raw lexical "<=" is exactly chronological.
-      // That keeps idx_send_stats_due sargable: SQLite drives the query off the
-      // partial index (range + ORDER BY satisfied, LIMIT pushed down) instead
-      // of the datetime()-wrapped form, which was non-sargable and regressed to
-      // a full sends scan reading ~9k rows every tick. Migration 0015 backfills
-      // any legacy SQLite-format rows; run ANALYZE send_stats so the planner
-      // knows the partial index is selective enough to prefer.
+      // Shape matters more than it looks. Two constraints, both learned the
+      // hard way after this query burned 27M rows/day (the entire D1 daily
+      // read allowance) by full-scanning sends every tick:
+      //
+      //  1. next_fetch_at is written in ONE format everywhere (JS ISO-8601 via
+      //     nowISO), so a raw lexical "<=" is exactly chronological and keeps
+      //     idx_send_stats_due sargable. The old datetime()-wrapped compare was
+      //     non-sargable. Migration 0015 backfills legacy SQLite-format rows.
+      //  2. The due set is resolved in a LIMITed subquery over send_stats
+      //     ALONE. SQLite cannot flatten a subquery that has LIMIT, so it must
+      //     materialise <=limit rows first and can never choose sends as the
+      //     driving table. Do NOT rewrite this as a flat two-table join: D1
+      //     does not honour ANALYZE statistics, so a flat join is free to pick
+      //     the catastrophic plan and there is no way to talk it out of it.
       `SELECT s.id AS send_id, s.created_at, s.completed_at
-         FROM send_stats ss
-         JOIN sends s ON s.id = ss.send_id
-        WHERE ss.is_final = 0
-          AND ss.next_fetch_at IS NOT NULL
-          AND ss.next_fetch_at <= ?
-          AND s.completed_at IS NOT NULL
-        ORDER BY ss.next_fetch_at ASC
-        LIMIT ?`,
+         FROM (
+           SELECT send_id, next_fetch_at
+             FROM send_stats
+            WHERE is_final = 0
+              AND next_fetch_at IS NOT NULL
+              AND next_fetch_at <= ?
+            ORDER BY next_fetch_at ASC
+            LIMIT ?
+         ) due
+         JOIN sends s ON s.id = due.send_id
+        WHERE s.completed_at IS NOT NULL
+        ORDER BY due.next_fetch_at ASC`,
     )
     .bind(nowISO(), limit > 0 ? limit : 25)
     .all<DueStatsRow>();
